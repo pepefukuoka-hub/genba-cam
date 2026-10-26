@@ -1,6 +1,6 @@
 (function () {
   'use strict';
-  const VER = 10;
+  const VER = 11;
   const $ = (id) => document.getElementById(id);
   const errText = (e) => (e && (e.name || e.message)) ? (String(e.name || '') + (e.message ? ': ' + String(e.message).slice(0, 100) : '')) : '不明';
   const show = (id) => { document.querySelectorAll('.screen').forEach((s) => { s.hidden = s.id !== id; }); window.scrollTo(0, 0); };
@@ -176,6 +176,27 @@
     return /^[A-Za-z0-9_-]+$/.test(t.trim()) ? { kind: 'o', code: t.trim() } : null;
   }
 
+  // ---------- 接続の詳しい報告 ----------
+  // つながらないとき、どの住所を持ち、どの組み合わせを試し、どうなったかを、画面に出す(原因を絞るため)
+  async function netReport(p) {
+    const rep = await p.getStats(), ids = {}, cands = [], pairs = [];
+    rep.forEach((r) => {
+      if (r.type === 'local-candidate' || r.type === 'remote-candidate') {
+        const addr = (r.address || r.ip || '?') + ':' + r.port; ids[r.id] = addr;
+        cands.push((r.type === 'local-candidate' ? '自分 ' : '相手 ') + addr + ' ' + (r.candidateType || '') + ' ' + (r.protocol || '') + (r.networkType ? ' ' + r.networkType : ''));
+      }
+    });
+    rep.forEach((r) => { if (r.type === 'candidate-pair') pairs.push((ids[r.localCandidateId] || '?') + ' → ' + (ids[r.remoteCandidateId] || '?') + ' ' + r.state + (r.nominated ? ' ★' : '') + ' 送' + (r.requestsSent || 0) + '/返' + (r.responsesReceived || 0)); });
+    return ['接続の状態: ' + p.connectionState + ' / ICE ' + p.iceConnectionState + ' / 住所の収集 ' + p.iceGatheringState].concat(cands.length ? cands : ['(住所の情報がありません)'], pairs.length ? ['試した組み合わせ:'].concat(pairs) : ['試した組み合わせ: なし']).join('\n');
+  }
+  // 12秒たってもつながらないとき、報告を出す
+  function watchConnect(p, box) {
+    setTimeout(async () => {
+      if (!p || p.connectionState === 'connected' || p.connectionState === 'closed') return;
+      try { box.hidden = false; box.textContent = await netReport(p); } catch (e) {}
+    }, 12000);
+  }
+
   // ---------- 接続の共通部分 ----------
   let pc = null, wake = null;
   // 同じWi-Fi(またはテザリング)の中だけでつなぐ。外のサーバーは使わない
@@ -258,7 +279,7 @@
   const acceptAnswer = (code) => { try { acceptBytes(fromB64u(code.trim())); } catch (e) { sMsg('コードを読み込めませんでした。'); } };   // 貼り付けのコード
   async function acceptBytes(bytes) {
     if (answered) return;
-    answered = true; $('sState').textContent = 'つないでいます…'; sMsg('');
+    answered = true; $('sState').textContent = 'つないでいます…'; sMsg(''); watchConnect(pc, $('sNet'));
     try { await pc.setRemoteDescription({ type: 'answer', sdp: buildAnswerSdp(offerSlim, decodeAnswer(bytes)) }); }
     catch (e) { answered = false; $('sState').textContent = '読み取りを待っています'; sMsg('返信コードを読み込めませんでした(' + errText(e) + ')。もう一度、読み取らせてください。'); }
   }
@@ -311,7 +332,7 @@
       drawQR($('qrAnswer'), bytesToStr(bytes));   // 読み取りやすいよう、文字ではなくバイナリで入れる
       const code = 'A3.' + toB64u(bytes);
       $('copyAnswer').onclick = () => copy(code, $('copyAnswer'));
-      $('vAnswer').hidden = false; $('vState').textContent = '映す側の、読み取りを待っています';
+      $('vAnswer').hidden = false; $('vState').textContent = '映す側の、読み取りを待っています'; watchConnect(pc, $('vNet'));
     } catch (e) { $('vState').textContent = '失敗しました'; vMsg('接続情報を読み込めませんでした(' + errText(e) + ')。映す側のQRコードを、もう一度、読み取ってください。直らないときは、トップの「この端末で診断」の結果を教えてください。'); }
   }
   function onViewerState() {
@@ -392,6 +413,24 @@
     clearInterval(timer); try { A && A.close(); } catch (e) {} try { B && B.close(); } catch (e) {}
     log(true, '診断おわり。この画面を、スクリーンショットで教えてください'); $('diagBtn').disabled = false;
   }
+  // 住所の確認: この端末が、つなぐときに使える住所(Wi-Fi・テザリングなど)を調べる。カメラの許可を一度使うと、本当の住所が見える
+  async function addrTest() {
+    const out = [], log = (t) => { out.push(t); $('diag').textContent = out.join('\n'); };
+    $('addrBtn').disabled = true; $('diag').hidden = false; $('diag').textContent = '調べています…';
+    let st = null, p = null;
+    try { st = await cam('environment'); log('カメラの許可: 取得できました'); } catch (e) { log('カメラの許可: 取得できません(' + errText(e) + ')。住所が端末名で隠れることがあります'); }
+    try {
+      p = newPC(); p.createDataChannel('x'); await p.setLocalDescription(await p.createOffer()); await gathered(p, 4000);
+      const sdp = p.localDescription.sdp, lines = sdp.split(/\r?\n/).filter((l) => l.indexOf('a=candidate:') === 0);
+      log('見つかった住所: ' + lines.length + ' 件');
+      lines.forEach((l) => { const c = l.split(' '); log('  ' + c[4] + ':' + c[5] + ' ' + c[2] + ' ' + (c[7] || '')); });
+      if (!lines.some((l) => /^\d+\.\d+\.\d+\.\d+$/.test(l.split(' ')[4]))) log('  → IPv4の住所がありません。この端末では、Wi-Fi・テザリングで直接つなげない可能性があります');
+      try { const rep = await p.getStats(); rep.forEach((r) => { if (r.type === 'local-candidate' && r.networkType) log('  種類: ' + (r.address || r.ip) + ' = ' + r.networkType); }); } catch (e) {}
+    } catch (e) { log('失敗: ' + errText(e)); }
+    try { p && p.close(); } catch (e) {} if (st) st.getTracks().forEach((t) => t.stop());
+    log('おわり。この画面を、スクリーンショットで教えてください(テザリングの親と子の、両方でお願いします)'); $('addrBtn').disabled = false;
+  }
+  $('addrBtn').onclick = addrTest;
   $('diagBtn').onclick = selfTest;
   if (/[?&]selftest=1/.test(location.search)) window.__t = { slim, offerFields, encodeOffer, decodeOffer, buildOfferSdp, answerFields, encodeAnswer, decodeAnswer, buildAnswerSdp };
 

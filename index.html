@@ -10,7 +10,7 @@
 <title>現場の目</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-180.png">
-<link rel="stylesheet" href="style.css?v=10">
+<link rel="stylesheet" href="style.css?v=11">
 </head>
 <body>
 
@@ -28,9 +28,12 @@
     <li>つながったら、離れても大丈夫です。</li>
   </ol>
   <p class="msg">映像は、スマホ同士で直接送ります。外のサーバーには、送りません。</p>
-  <button type="button" class="small" id="diagBtn">この端末で診断</button>
+  <div class="row">
+    <button type="button" class="small" id="diagBtn">この端末で診断</button>
+    <button type="button" class="small" id="addrBtn">住所を調べる(テザリング用)</button>
+  </div>
   <pre id="diag" hidden></pre>
-  <p class="msg" id="ver">版 10</p>
+  <p class="msg" id="ver">版 11</p>
 </main>
 
 <!-- 映す側 -->
@@ -64,6 +67,7 @@
     </div>
   </section>
   <p class="msg" id="sMsg" role="status"></p>
+  <pre class="net" id="sNet" hidden></pre>
 </main>
 
 <!-- 見る側 -->
@@ -101,10 +105,11 @@
     </div>
   </section>
   <p class="msg" id="vMsg" role="status"></p>
+  <pre class="net" id="vNet" hidden></pre>
 </main>
 
 <script src="vendor/qrcode.min.js"></script>
 <script src="vendor/jsQR.js"></script>
-<script src="app.js?v=10"></script>
+<script src="app.js?v=11"></script>
 </body>
 </html>
