@@ -10,7 +10,7 @@
 <title>現場の目</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-180.png">
-<link rel="stylesheet" href="style.css?v=8">
+<link rel="stylesheet" href="style.css?v=9">
 </head>
 <body>
 
@@ -23,14 +23,14 @@
   <ol class="steps">
     <li>2台を、同じWi-Fiにつなぎます。ルーターがなければ、片方のスマホの「テザリング(インターネット共有)」に、もう片方をつなぎます。</li>
     <li>映す側で「映す側」を押すと、QRコードが出ます。</li>
-    <li>見る側のスマホの、標準のカメラで、そのQRコードを読み取ります。出てきたページを開きます。</li>
+    <li>見る側のスマホで、そのQRコードを読み取ります。標準のカメラで読み取って、出てきたページを開くか、「見る側」の中の、カメラの読み取りボタンを使います。</li>
     <li>見る側に出たQRコードを、映す側のカメラに映します(10〜30 cmまで近づけ、画面の明るさは最大に)。</li>
     <li>つながったら、離れても大丈夫です。</li>
   </ol>
   <p class="msg">映像は、スマホ同士で直接送ります。外のサーバーには、送りません。</p>
   <button type="button" class="small" id="diagBtn">この端末で診断</button>
   <pre id="diag" hidden></pre>
-  <p class="msg" id="ver">版 8</p>
+  <p class="msg" id="ver">版 9</p>
 </main>
 
 <!-- 映す側 -->
@@ -75,6 +75,11 @@
 
   <section id="vPair">
     <p class="lead" id="vWait">映す側の画面のQRコードを、このスマホの標準のカメラで読み取り、出てきたページを開いてください。</p>
+    <button type="button" id="vScanBtn">このスマホのカメラで、QRを読み取る</button>
+    <div id="vScanBox" hidden>
+      <video id="vPrev" playsinline muted autoplay></video>
+      <p class="msg">映す側のQRコードを、この映像に映してください。</p>
+    </div>
     <details id="vPaste">
       <summary>QRコードが読めないとき</summary>
       <p class="msg">映す側の「リンクをコピー」で取ったリンクを、メッセージ等でこちらに送り、下に貼り付けてください。</p>
@@ -100,6 +105,6 @@
 
 <script src="vendor/qrcode.min.js"></script>
 <script src="vendor/jsQR.js"></script>
-<script src="app.js?v=8"></script>
+<script src="app.js?v=9"></script>
 </body>
 </html>

@@ -1,6 +1,6 @@
 (function () {
   'use strict';
-  const VER = 8;
+  const VER = 9;
   const $ = (id) => document.getElementById(id);
   const errText = (e) => (e && (e.name || e.message)) ? (String(e.name || '') + (e.message ? ': ' + String(e.message).slice(0, 100) : '')) : '不明';
   const show = (id) => { document.querySelectorAll('.screen').forEach((s) => { s.hidden = s.id !== id; }); window.scrollTo(0, 0); };
@@ -111,6 +111,67 @@
       sec.filter((l) => /^a=extmap:\d+ (urn:3gpp:video-orientation|http:\/\/www\.ietf\.org\/id\/draft-holmer-rmcat-transport-wide-cc|urn:ietf:params:rtp-hdrext:sdes:mid)/.test(l)), ['a=recvonly', 'a=rtcp-mux'], codec).join('\r\n') + '\r\n';
   }
 
+  // ---------- 最初の接続情報(映す側 → 見る側)も、小さな形式にする ----------
+  const ru32 = (n) => [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255];
+  const rd32 = (b, i) => ((b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3]) >>> 0;
+  function offerFields(sdp) {   // 自分の offer から、組み立てに必要な数値だけを取り出す。取り出せなければ、例外(→ 長い形式に切り替え)
+    const get = (re) => { const m = sdp.match(re); return m ? m[1].trim() : null; };
+    const vp8 = get(/^a=rtpmap:(\d+) VP8\//im); if (!vp8) throw new Error('VP8なし');
+    const rtx = get(new RegExp('^a=fmtp:(\\d+) apt=' + vp8 + '\\s*$', 'm'));
+    const fbs = []; sdp.split(/\r?\n/).forEach((l) => { const m = l.match(new RegExp('^a=rtcp-fb:' + vp8 + ' (.+)$')); if (m) fbs.push(m[1].trim()); });
+    const ext = (needle) => { const m = sdp.split(/\r?\n/).map((l) => l.match(/^a=extmap:(\d+)(?:\/\w+)? (\S+)/)).find((x) => x && x[2].indexOf(needle) >= 0); return m ? +m[1] : 0; };
+    const g = sdp.match(/^a=ssrc-group:FID (\d+) (\d+)/m), one = sdp.match(/^a=ssrc:(\d+) /m);
+    if (!g && !one) throw new Error('ssrcなし');
+    const f = answerFields(sdp);   // ufrag / pwd / fp / ip / port(同じ取り出し方)
+    if (!f.ip) throw new Error('接続先なし');
+    return { vp8: +vp8, rtx: rtx ? +rtx : 0, nack: fbs.indexOf('nack') >= 0, pli: fbs.indexOf('nack pli') >= 0, tcc: fbs.indexOf('transport-cc') >= 0,
+      vo: ext('video-orientation'), tccExt: ext('transport-wide-cc'), midExt: ext('sdes:mid'), ssrc1: g ? +g[1] : +one[1], ssrc2: g ? +g[2] : 0,
+      mid: get(/^a=mid:(.+)$/m) || '0', ufrag: f.ufrag, pwd: f.pwd, fp: f.fp, ip: f.ip, port: f.port };
+  }
+  function encodeOffer(f) {
+    const e = new TextEncoder(), m = e.encode(f.mid), u = e.encode(f.ufrag), p = e.encode(f.pwd);
+    const flags = (f.rtx ? 1 : 0) | (f.nack ? 2 : 0) | (f.pli ? 4 : 0) | (f.tcc ? 8 : 0);
+    return Uint8Array.from([0x4f, 0x32, flags, f.vp8, f.rtx, f.vo, f.tccExt, f.midExt].concat(ru32(f.ssrc1), ru32(f.ssrc2), [m.length], Array.from(m), [u.length], Array.from(u), [p.length], Array.from(p), f.fp, f.ip, [f.port >> 8, f.port & 255]));
+  }
+  function decodeOffer(b) {
+    if (b[0] !== 0x4f || b[1] !== 0x32) throw new Error('形式が違います');
+    const d = new TextDecoder(), flags = b[2], f = { vp8: b[3], rtx: b[4], vo: b[5], tccExt: b[6], midExt: b[7], nack: !!(flags & 2), pli: !!(flags & 4), tcc: !!(flags & 8) };
+    f.ssrc1 = rd32(b, 8); f.ssrc2 = rd32(b, 12); let i = 16;
+    const ml = b[i++]; f.mid = d.decode(b.slice(i, i + ml)); i += ml;
+    const ul = b[i++]; f.ufrag = d.decode(b.slice(i, i + ul)); i += ul;
+    const pl = b[i++]; f.pwd = d.decode(b.slice(i, i + pl)); i += pl;
+    f.fp = Array.from(b.slice(i, i + 32)); i += 32; f.ip = [b[i], b[i + 1], b[i + 2], b[i + 3]]; f.port = (b[i + 4] << 8) | b[i + 5];
+    if (f.fp.length !== 32 || !f.ufrag || !f.pwd) throw new Error('欠けています');
+    return f;
+  }
+  function buildOfferSdp(f) {   // 受け取った数値から、映像を送るだけの offer を組み立てる
+    const ip = f.ip.join('.'), fp = f.fp.map((x) => x.toString(16).padStart(2, '0').toUpperCase()).join(':');
+    const pts = [f.vp8].concat(f.rtx ? [f.rtx] : []);
+    const L = ['v=0', 'o=- 1 2 IN IP4 127.0.0.1', 's=-', 't=0 0', 'a=group:BUNDLE ' + f.mid,
+      'm=video ' + f.port + ' UDP/TLS/RTP/SAVPF ' + pts.join(' '), 'c=IN IP4 ' + ip, 'a=rtcp:9 IN IP4 0.0.0.0',
+      'a=candidate:1 1 udp 2122194687 ' + ip + ' ' + f.port + ' typ host generation 0',
+      'a=ice-ufrag:' + f.ufrag, 'a=ice-pwd:' + f.pwd, 'a=fingerprint:sha-256 ' + fp, 'a=setup:actpass', 'a=mid:' + f.mid];
+    if (f.vo) L.push('a=extmap:' + f.vo + ' urn:3gpp:video-orientation');
+    if (f.tccExt) L.push('a=extmap:' + f.tccExt + ' http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01');
+    if (f.midExt) L.push('a=extmap:' + f.midExt + ' urn:ietf:params:rtp-hdrext:sdes:mid');
+    L.push('a=sendonly', 'a=msid:g t', 'a=rtcp-mux', 'a=rtpmap:' + f.vp8 + ' VP8/90000');
+    if (f.tcc) L.push('a=rtcp-fb:' + f.vp8 + ' transport-cc');
+    if (f.nack) L.push('a=rtcp-fb:' + f.vp8 + ' nack');
+    if (f.pli) L.push('a=rtcp-fb:' + f.vp8 + ' nack pli');
+    if (f.rtx) L.push('a=rtpmap:' + f.rtx + ' rtx/90000', 'a=fmtp:' + f.rtx + ' apt=' + f.vp8);
+    if (f.rtx && f.ssrc2) L.push('a=ssrc-group:FID ' + f.ssrc1 + ' ' + f.ssrc2);
+    L.push('a=ssrc:' + f.ssrc1 + ' cname:g'); if (f.rtx && f.ssrc2) L.push('a=ssrc:' + f.ssrc2 + ' cname:g');
+    return L.join('\r\n') + '\r\n';
+  }
+  // 見る側の入口: {kind:'o2', code} は小さな形式、{kind:'o', code} は長い形式(予備)
+  async function offerSdpFrom(spec) { return spec.kind === 'o2' ? buildOfferSdp(decodeOffer(fromB64u(spec.code))) : unpack(spec.code); }
+  function parseOfferText(t) {   // リンク・コード・QRの文字から、取り出す
+    const m2 = t.match(/#?o2=([A-Za-z0-9_-]+)/), m1 = t.match(/#?o=([A-Za-z0-9_-]+)/);
+    if (m2) return { kind: 'o2', code: m2[1] };
+    if (m1) return { kind: 'o', code: m1[1] };
+    return /^[A-Za-z0-9_-]+$/.test(t.trim()) ? { kind: 'o', code: t.trim() } : null;
+  }
+
   // ---------- 接続の共通部分 ----------
   let pc = null, wake = null;
   // 同じWi-Fi(またはテザリング)の中だけでつなぐ。外のサーバーは使わない
@@ -132,7 +193,19 @@
   // ---------- 映す側 ----------
   let stream = null, facing = 'environment', scanTimer = 0, answered = false, offerSlim = '';
   const sMsg = (t) => { $('sMsg').textContent = t; };
-  const cam = (f) => navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: f }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } } });
+  // カメラは、条件をゆるめながら順に試す。端末によっては、細かい指定で失敗するため
+  async function cam(f) {
+    const tries = [
+      { facingMode: { ideal: f }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
+      { facingMode: { ideal: f } },
+      true
+    ];
+    let last = null;
+    for (const v of tries) {
+      try { return await navigator.mediaDevices.getUserMedia({ audio: false, video: v }); } catch (e) { last = e; if (e && (e.name === 'NotAllowedError' || e.name === 'NotReadableError' || e.name === 'SecurityError')) break; }
+    }
+    throw last;
+  }
 
   function preferCodecs(p) {   // 形式を VP8 だけにして、QRコードを小さくする(Chrome・Safariの両方で使える)
     try {
@@ -155,8 +228,10 @@
       await pc.setLocalDescription(await pc.createOffer());
       await gathered(pc);
       offerSlim = slim(pc.localDescription.sdp);
-      const code = await pack(offerSlim);
-      const url = location.origin + location.pathname + '#o=' + code;
+      let tail;
+      try { tail = '#o2=' + toB64u(encodeOffer(offerFields(offerSlim))); }   // 小さな形式(QRが小さく、読み取りやすい)
+      catch (e) { tail = '#o=' + await pack(offerSlim); }                     // 取り出せない端末は、長い形式
+      const url = location.origin + location.pathname + tail;
       drawQR($('qrOffer'), url);
       $('copyOffer').onclick = () => copy(url, $('copyOffer'));
       $('sState').textContent = '見る側の、読み取りを待っています';
@@ -213,15 +288,15 @@
   // ---------- 見る側 ----------
   const vMsg = (t) => { $('vMsg').textContent = t; };
   let statTimer = 0;
-  async function startViewer(offerCode) {
-    show('viewer');
-    if (!offerCode) { $('vState').textContent = '待っています'; return; }
+  async function startViewer(spec) {
+    show('viewer'); stopViewerScan();
+    if (!spec) { $('vState').textContent = '待っています'; return; }
     $('vWait').hidden = true; $('vPaste').hidden = true; $('vState').textContent = '接続の準備をしています…'; vMsg('');
     try {
       pc = newPC();
       pc.ontrack = (e) => { const v = $('remote'); v.srcObject = e.streams[0] || new MediaStream([e.track]); v.play().catch(() => {}); };
       pc.onconnectionstatechange = onViewerState;
-      await pc.setRemoteDescription({ type: 'offer', sdp: await unpack(offerCode.trim()) });
+      await pc.setRemoteDescription({ type: 'offer', sdp: await offerSdpFrom(spec) });
       try {   // 受け取る形式は VP8 だけにする(返信を小さくするため)
         const rc = RTCRtpReceiver.getCapabilities('video').codecs;
         pc.getTransceivers()[0].setCodecPreferences(rc.filter((c) => /video\/VP8$/i.test(c.mimeType)).concat(rc.filter((c) => /video\/rtx$/i.test(c.mimeType))));
@@ -253,10 +328,26 @@
     } else if (s === 'disconnected') { $('vState').textContent = '切れかけています…'; }
     else if (s === 'failed' || s === 'closed') { $('vState').textContent = 'つながりませんでした'; vMsg('同じWi-Fi(またはテザリング)につながっているか、確認してください。「戻る」から、もう一度つなぎ直せます。'); }
   }
+  let vStream = null, vScan = 0;
+  function stopViewerScan() { clearInterval(vScan); if (vStream) { vStream.getTracks().forEach((t) => t.stop()); vStream = null; } $('vScanBox').hidden = true; }
+  $('vScanBtn').onclick = async () => {   // 標準カメラで読めないときの代わり。このスマホのカメラで、映す側のQRを読む
+    vMsg(''); $('vScanBtn').disabled = true;
+    try { vStream = await cam('environment'); } catch (e) { $('vScanBtn').disabled = false; vMsg('カメラを開けませんでした(' + errText(e) + ')。ほかのタブやアプリがカメラを使っていないか確認してください。'); return; }
+    const v = $('vPrev'); v.srcObject = vStream; v.play().catch(() => {}); $('vScanBox').hidden = false;
+    const c = document.createElement('canvas'), g = c.getContext('2d', { willReadFrequently: true });
+    vScan = setInterval(() => {
+      if (!v.videoWidth) return;
+      const sc = Math.min(1, 1280 / v.videoWidth); c.width = Math.round(v.videoWidth * sc); c.height = Math.round(v.videoHeight * sc);
+      g.drawImage(v, 0, 0, c.width, c.height);
+      const d = g.getImageData(0, 0, c.width, c.height), r = window.jsQR(d.data, c.width, c.height, { inversionAttempts: 'dontInvert' });
+      const spec = r && r.data && /#o2?=/.test(r.data) ? parseOfferText(r.data) : null;
+      if (spec) { stopViewerScan(); startViewer(spec); }
+    }, 250);
+  };
   $('full').onclick = () => { const v = $('remote'), f = v.requestFullscreen || v.webkitRequestFullscreen || v.webkitEnterFullscreen; if (f) try { f.call(v); } catch (e) {} };
   $('useOffer').onclick = () => {
-    const t = $('pasteOffer').value.trim(), m = t.match(/#o=([A-Za-z0-9_-]+)/);
-    startViewer(m ? m[1] : t);
+    const spec = parseOfferText($('pasteOffer').value.trim());
+    if (spec) startViewer(spec); else vMsg('リンクを読み込めませんでした。');
   };
 
   // ---------- この端末での自己診断 ----------
@@ -278,11 +369,13 @@
       const st = cv.captureStream(15);
       A = newPC(); st.getTracks().forEach((t) => A.addTrack(t, st)); preferCodecs(A);
       await A.setLocalDescription(await A.createOffer()); await gathered(A);
-      const offerSlim = slim(A.localDescription.sdp), code = await pack(offerSlim);
-      log(true, '1 映す側の接続情報を作成(' + code.length + '文字)');
+      const offerSlim = slim(A.localDescription.sdp); let spec, size;
+      try { const bytes = encodeOffer(offerFields(offerSlim)); spec = { kind: 'o2', code: toB64u(bytes) }; size = bytes.length + 'バイト(小さな形式)'; }
+      catch (e) { spec = { kind: 'o', code: await pack(offerSlim) }; size = spec.code.length + '文字(長い形式。理由: ' + errText(e) + ')'; }
+      log(true, '1 映す側の接続情報を作成(' + size + ')');
       B = newPC(); const vid = document.createElement('video'); vid.muted = true; vid.playsInline = true;
       B.ontrack = (e) => { vid.srcObject = e.streams[0] || new MediaStream([e.track]); vid.play().catch(() => {}); };
-      await B.setRemoteDescription({ type: 'offer', sdp: await unpack(code) }); log(true, '2 見る側が読み込み');
+      await B.setRemoteDescription({ type: 'offer', sdp: await offerSdpFrom(spec) }); log(true, '2 見る側が読み込み');
       try { const rc = RTCRtpReceiver.getCapabilities('video').codecs; B.getTransceivers()[0].setCodecPreferences(rc.filter((c) => /video\/VP8$/i.test(c.mimeType)).concat(rc.filter((c) => /video\/rtx$/i.test(c.mimeType)))); } catch (e) {}
       await B.setLocalDescription(await B.createAnswer()); await gathered(B);
       const bytes = encodeAnswer(answerFields(B.localDescription.sdp)); log(true, '3 返信を作成(' + bytes.length + 'バイト)');
@@ -299,12 +392,12 @@
 
   // ---------- 入口 ----------
   $('goSender').onclick = startSender;
-  $('goViewer').onclick = () => startViewer('');
+  $('goViewer').onclick = () => startViewer(null);
   const back = () => { location.href = location.pathname; };
   $('sBack').onclick = back; $('vBack').onclick = back;
 
-  const m = location.hash.match(/^#o=([A-Za-z0-9_-]+)$/);
-  if (m) { history.replaceState(null, '', location.pathname); startViewer(m[1]); }   // QRコードから開いたときは、そのまま見る側へ
+  const initial = parseOfferText(location.hash);
+  if (initial && /^#o2?=/.test(location.hash)) { history.replaceState(null, '', location.pathname); startViewer(initial); }   // QRコードから開いたときは、そのまま見る側へ
 
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 })();

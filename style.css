@@ -46,3 +46,5 @@ summary { cursor: pointer; padding: 6px 0; }
 #prev { width: 100%; max-height: 38vh; object-fit: cover; border-radius: 12px; background: #000; }
 #remote { width: 100%; max-height: 78vh; object-fit: contain; border-radius: 12px; background: #000; }
 pre#diag { margin: 0; white-space: pre-wrap; word-break: break-all; font: 12px/1.5 ui-monospace, Menlo, monospace; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 10px; }
+#vPrev { width: 100%; max-height: 40vh; object-fit: cover; border-radius: 12px; background: #000; }
+#vScanBox { display: flex; flex-direction: column; gap: 6px; }
