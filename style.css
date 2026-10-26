@@ -1,0 +1,47 @@
+/* 現場で、屋外の明るさでも読める、くっきりした配色。暗い面に、黄緑の差し色 */
+:root {
+  --bg: #f3f5f1;
+  --surface: #ffffff;
+  --fg: #151a17;
+  --muted: #5d665f;
+  --line: #d3d9d2;
+  --accent: #1f7a4d;
+  --accent-fg: #ffffff;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #101412; --surface: #1a201d; --fg: #eef2ee; --muted: #9ba79d;
+    --line: #2f3833; --accent: #5fd08f; --accent-fg: #07210f;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; min-height: 100%; }
+body { background: var(--bg); color: var(--fg); font: 16px/1.6 -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif; }
+.screen {
+  max-width: 560px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px;
+  padding: max(20px, env(safe-area-inset-top, 0px)) max(18px, env(safe-area-inset-right, 0px)) max(24px, env(safe-area-inset-bottom, 0px)) max(18px, env(safe-area-inset-left, 0px));
+}
+h1 { font-size: 28px; margin: 6px 0 0; letter-spacing: .06em; }
+.lead { margin: 0; }
+.msg { margin: 0; color: var(--muted); font-size: 13px; min-height: 1.3em; }
+.steps { margin: 4px 0; padding-left: 1.3em; color: var(--muted); font-size: 14px; }
+.steps li { margin-bottom: 4px; }
+button {
+  font: inherit; color: var(--fg); background: var(--surface); border: 1px solid var(--line);
+  border-radius: 12px; padding: 14px 16px; min-height: 52px; width: 100%;
+}
+button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); font-weight: 700; font-size: 18px; }
+button.small { width: auto; min-height: 40px; padding: 8px 14px; font-size: 14px; }
+button:focus-visible, textarea:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.bar { display: flex; align-items: center; gap: 12px; }
+.bar span { color: var(--muted); font-size: 14px; }
+textarea { font: 13px/1.4 ui-monospace, Menlo, monospace; width: 100%; padding: 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); color: var(--fg); }
+details { color: var(--muted); font-size: 14px; }
+summary { cursor: pointer; padding: 6px 0; }
+.qr { width: 100%; max-width: 520px; height: auto; aspect-ratio: 1; background: #fff; border-radius: 12px; image-rendering: pixelated; align-self: center; }
+#prev { width: 100%; max-height: 38vh; object-fit: cover; border-radius: 12px; background: #000; }
+#remote { width: 100%; max-height: 78vh; object-fit: contain; border-radius: 12px; background: #000; }

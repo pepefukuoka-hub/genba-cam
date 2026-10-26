@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#12161a">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="現場の目">
+<title>現場の目</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="stylesheet" href="style.css?v=7">
+</head>
+<body>
+
+<!-- はじめの画面 -->
+<main class="screen" id="home">
+  <h1>現場の目</h1>
+  <p class="lead">スマホ2台を、Wi-Fiでつなぎます。片方のカメラの映像を、もう片方で見ます。</p>
+  <button type="button" class="primary" id="goSender">映す側(カメラを現場に置く)</button>
+  <button type="button" id="goViewer">見る側</button>
+  <ol class="steps">
+    <li>2台を、同じWi-Fiにつなぎます。ルーターがなければ、片方のスマホの「テザリング(インターネット共有)」に、もう片方をつなぎます。</li>
+    <li>映す側で「映す側」を押すと、QRコードが出ます。</li>
+    <li>見る側のスマホの、標準のカメラで、そのQRコードを読み取ります。出てきたページを開きます。</li>
+    <li>見る側に出たQRコードを、映す側のカメラに映します(10〜30 cmまで近づけ、画面の明るさは最大に)。</li>
+    <li>つながったら、離れても大丈夫です。</li>
+  </ol>
+  <p class="msg">映像は、スマホ同士で直接送ります。外のサーバーには、送りません。</p>
+  <p class="msg" id="ver">版 7</p>
+</main>
+
+<!-- 映す側 -->
+<main class="screen" id="sender" hidden>
+  <header class="bar">
+    <button type="button" class="small" id="sBack">戻る</button>
+    <span id="sState">準備しています…</span>
+  </header>
+
+  <section id="sPair">
+    <p class="lead" id="sStep1">1. 見る側のスマホの標準カメラで、このQRコードを読み取ってください。</p>
+    <canvas id="qrOffer" class="qr" aria-label="接続用のQRコード"></canvas>
+    <div class="row">
+      <button type="button" class="small" id="copyOffer">リンクをコピー</button>
+    </div>
+    <p class="lead" id="sStep2">2. 見る側に出たQRコードを、このスマホのカメラ(下の映像)に映してください。見る側の画面の明るさを最大にして、10〜30 cmまで近づけると読めます。</p>
+    <details>
+      <summary>QRコードが読めないとき</summary>
+      <p class="msg">リンクを、メッセージ等で見る側に送って開き、出てきたコードを、下に貼り付けてください。</p>
+      <textarea id="pasteAnswer" rows="3" placeholder="見る側のコードを貼り付け"></textarea>
+      <button type="button" class="small" id="usePaste">このコードでつなぐ</button>
+    </details>
+  </section>
+
+  <video id="prev" playsinline muted autoplay></video>
+
+  <section id="sLive" hidden>
+    <p class="lead">映しています。この画面は、つけたままにしてください。</p>
+    <div class="row">
+      <button type="button" class="small" id="flip">カメラ切替(前/後ろ)</button>
+    </div>
+  </section>
+  <p class="msg" id="sMsg" role="status"></p>
+</main>
+
+<!-- 見る側 -->
+<main class="screen" id="viewer" hidden>
+  <header class="bar">
+    <button type="button" class="small" id="vBack">戻る</button>
+    <span id="vState">待っています</span>
+  </header>
+
+  <section id="vPair">
+    <p class="lead" id="vWait">映す側の画面のQRコードを、このスマホの標準のカメラで読み取り、出てきたページを開いてください。</p>
+    <details id="vPaste">
+      <summary>QRコードが読めないとき</summary>
+      <p class="msg">映す側の「リンクをコピー」で取ったリンクを、メッセージ等でこちらに送り、下に貼り付けてください。</p>
+      <textarea id="pasteOffer" rows="3" placeholder="映す側のリンクを貼り付け"></textarea>
+      <button type="button" class="small" id="useOffer">このリンクでつなぐ</button>
+    </details>
+    <div id="vAnswer" hidden>
+      <p class="lead">このQRコードを、映す側のカメラで読み取らせてください。</p>
+      <canvas id="qrAnswer" class="qr" aria-label="返信用のQRコード"></canvas>
+      <div class="row"><button type="button" class="small" id="copyAnswer">コードをコピー</button></div>
+    </div>
+  </section>
+
+  <section id="vLive" hidden>
+    <video id="remote" playsinline muted autoplay></video>
+    <div class="row">
+      <button type="button" class="small" id="full">全画面</button>
+      <span id="stats" class="msg"></span>
+    </div>
+  </section>
+  <p class="msg" id="vMsg" role="status"></p>
+</main>
+
+<script src="vendor/qrcode.min.js"></script>
+<script src="vendor/jsQR.js"></script>
+<script src="app.js?v=7"></script>
+</body>
+</html>
