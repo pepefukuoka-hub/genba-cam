@@ -1,7 +1,8 @@
 (function () {
   'use strict';
-  const VER = 7;
+  const VER = 8;
   const $ = (id) => document.getElementById(id);
+  const errText = (e) => (e && (e.name || e.message)) ? (String(e.name || '') + (e.message ? ': ' + String(e.message).slice(0, 100) : '')) : '不明';
   const show = (id) => { document.querySelectorAll('.screen').forEach((s) => { s.hidden = s.id !== id; }); window.scrollTo(0, 0); };
   $('ver').textContent = '版 ' + VER;
 
@@ -107,7 +108,7 @@
       ['m=video ' + port + ' UDP/TLS/RTP/SAVPF ' + order.join(' '), 'c=IN IP4 ' + ip, 'a=rtcp:9 IN IP4 0.0.0.0'],
       f.ip ? ['a=candidate:1 1 udp 2122194687 ' + ip + ' ' + port + ' typ host generation 0'] : [],
       ['a=ice-ufrag:' + f.ufrag, 'a=ice-pwd:' + f.pwd, 'a=fingerprint:sha-256 ' + fp, 'a=setup:' + (f.active ? 'active' : 'passive'), mid],
-      sec.filter((l) => l.indexOf('a=extmap:') === 0), ['a=recvonly', 'a=rtcp-mux'], codec).join('\r\n') + '\r\n';
+      sec.filter((l) => /^a=extmap:\d+ (urn:3gpp:video-orientation|http:\/\/www\.ietf\.org\/id\/draft-holmer-rmcat-transport-wide-cc|urn:ietf:params:rtp-hdrext:sdes:mid)/.test(l)), ['a=recvonly', 'a=rtcp-mux'], codec).join('\r\n') + '\r\n';
   }
 
   // ---------- 接続の共通部分 ----------
@@ -144,7 +145,7 @@
   async function startSender() {
     show('sender'); $('sState').textContent = '準備しています…'; sMsg('');
     try { stream = await cam(facing); }
-    catch (e) { sMsg('カメラが許可されていません。設定 > Safari(またはChrome) > カメラ で許可して、ページを開き直してください。'); return; }
+    catch (e) { $('sState').textContent = 'カメラを開けません'; sMsg('カメラを開けませんでした(' + errText(e) + ')。設定でカメラを許可し、ほかのタブやアプリ(「にぎにぎ」など)がカメラを使っていないか確認してください。LINEなどの中のブラウザでは開けないので、SafariかChromeで開いてください。'); return; }
     const v = $('prev'); v.srcObject = stream; v.play().catch(() => {});
     pc = newPC();
     stream.getTracks().forEach((t) => pc.addTrack(t, stream));
@@ -160,7 +161,7 @@
       $('copyOffer').onclick = () => copy(url, $('copyOffer'));
       $('sState').textContent = '見る側の、読み取りを待っています';
       scanLoop();
-    } catch (e) { sMsg('QRコードを作れませんでした(' + (e && e.message ? e.message : e) + ')'); }
+    } catch (e) { $('sState').textContent = '失敗しました'; sMsg('QRコードを作れませんでした(' + errText(e) + ')'); }
   }
 
   function scanLoop() {   // 見る側のQRコードを、カメラの映像から探す
@@ -180,7 +181,7 @@
     if (answered) return;
     answered = true; $('sState').textContent = 'つないでいます…'; sMsg('');
     try { await pc.setRemoteDescription({ type: 'answer', sdp: buildAnswerSdp(offerSlim, decodeAnswer(bytes)) }); }
-    catch (e) { answered = false; $('sState').textContent = '読み取りを待っています'; sMsg('コードを読み込めませんでした。もう一度、読み取らせてください。'); }
+    catch (e) { answered = false; $('sState').textContent = '読み取りを待っています'; sMsg('返信コードを読み込めませんでした(' + errText(e) + ')。もう一度、読み取らせてください。'); }
   }
   $('usePaste').onclick = () => { const t = $('pasteAnswer').value.trim(); if (t) acceptAnswer(t.indexOf('A2.') === 0 ? t.slice(3) : t); };
 
@@ -232,7 +233,7 @@
       const code = 'A2.' + toB64u(bytes);
       $('copyAnswer').onclick = () => copy(code, $('copyAnswer'));
       $('vAnswer').hidden = false; $('vState').textContent = '映す側の、読み取りを待っています';
-    } catch (e) { $('vState').textContent = '失敗しました'; vMsg('コードを読み込めませんでした。映す側のQRコードを、もう一度、読み取ってください。'); }
+    } catch (e) { $('vState').textContent = '失敗しました'; vMsg('接続情報を読み込めませんでした(' + errText(e) + ')。映す側のQRコードを、もう一度、読み取ってください。直らないときは、トップの「この端末で診断」の結果を教えてください。'); }
   }
   function onViewerState() {
     const s = pc.connectionState;
@@ -257,6 +258,44 @@
     const t = $('pasteOffer').value.trim(), m = t.match(/#o=([A-Za-z0-9_-]+)/);
     startViewer(m ? m[1] : t);
   };
+
+  // ---------- この端末での自己診断 ----------
+  // 1台の中で、映す側と見る側を両方動かし、接続の手順を通して試す。端末ごとの非対応・相性を見つけるため
+  const waitFor = (fn, ms) => new Promise((res) => { const t0 = Date.now(); const id = setInterval(() => { if (fn()) { clearInterval(id); res(true); } else if (Date.now() - t0 > ms) { clearInterval(id); res(false); } }, 150); });
+  async function selfTest() {
+    const out = [], log = (ok, t) => { out.push((ok ? '○ ' : '× ') + t); $('diag').textContent = out.join('\n'); };
+    $('diagBtn').disabled = true; $('diag').hidden = false; $('diag').textContent = '診断しています…';
+    log(!!window.isSecureContext, 'https で開いている');
+    log(!!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia), 'カメラ機能');
+    log(typeof RTCPeerConnection === 'function', 'WebRTC');
+    log(typeof CompressionStream === 'function' && typeof DecompressionStream === 'function', '圧縮機能');
+    try { log(RTCRtpSender.getCapabilities('video').codecs.some((c) => /VP8$/i.test(c.mimeType)), '映像形式 VP8'); } catch (e) { log(false, '映像形式の確認: ' + errText(e)); }
+    log(true, '端末: ' + navigator.userAgent.replace(/^Mozilla\/5\.0 /, '').slice(0, 80));
+    let A, B, timer;
+    try {
+      const cv = document.createElement('canvas'); cv.width = 320; cv.height = 180; const g = cv.getContext('2d'); let n = 0;
+      timer = setInterval(() => { g.fillStyle = '#246'; g.fillRect(0, 0, 320, 180); g.fillStyle = '#fff'; g.fillRect((n++ * 7) % 300, 80, 20, 20); }, 66);
+      const st = cv.captureStream(15);
+      A = newPC(); st.getTracks().forEach((t) => A.addTrack(t, st)); preferCodecs(A);
+      await A.setLocalDescription(await A.createOffer()); await gathered(A);
+      const offerSlim = slim(A.localDescription.sdp), code = await pack(offerSlim);
+      log(true, '1 映す側の接続情報を作成(' + code.length + '文字)');
+      B = newPC(); const vid = document.createElement('video'); vid.muted = true; vid.playsInline = true;
+      B.ontrack = (e) => { vid.srcObject = e.streams[0] || new MediaStream([e.track]); vid.play().catch(() => {}); };
+      await B.setRemoteDescription({ type: 'offer', sdp: await unpack(code) }); log(true, '2 見る側が読み込み');
+      try { const rc = RTCRtpReceiver.getCapabilities('video').codecs; B.getTransceivers()[0].setCodecPreferences(rc.filter((c) => /video\/VP8$/i.test(c.mimeType)).concat(rc.filter((c) => /video\/rtx$/i.test(c.mimeType)))); } catch (e) {}
+      await B.setLocalDescription(await B.createAnswer()); await gathered(B);
+      const bytes = encodeAnswer(answerFields(B.localDescription.sdp)); log(true, '3 返信を作成(' + bytes.length + 'バイト)');
+      await A.setRemoteDescription({ type: 'answer', sdp: buildAnswerSdp(offerSlim, decodeAnswer(bytes)) }); log(true, '4 映す側が返信を読み込み');
+      const ok = await waitFor(() => A.connectionState === 'connected' && B.connectionState === 'connected', 9000);
+      log(ok, '5 接続(' + A.connectionState + ' / ' + B.connectionState + ')');
+      const ok2 = await waitFor(() => vid.videoWidth > 0, 7000);
+      log(ok2, '6 映像が届く' + (ok2 ? '(' + vid.videoWidth + '×' + vid.videoHeight + ')' : ''));
+    } catch (e) { log(false, '失敗: ' + errText(e)); }
+    clearInterval(timer); try { A && A.close(); } catch (e) {} try { B && B.close(); } catch (e) {}
+    log(true, '診断おわり。この画面を、スクリーンショットで教えてください'); $('diagBtn').disabled = false;
+  }
+  $('diagBtn').onclick = selfTest;
 
   // ---------- 入口 ----------
   $('goSender').onclick = startSender;
