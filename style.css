@@ -79,3 +79,5 @@ button.mode span { font-size: 13px; font-weight: 400; opacity: .9; }
 #s2Cards { display: flex; flex-direction: column; gap: 12px; }
 #dualGrid.zoomed { grid-template-columns: 1fr !important; }
 #dualGrid.zoomed .pane:not(.big) { display: none; }
+
+em.ipad { font-style: normal; font-size: 22px; font-weight: 800; background: #14081f; color: #fff; border-radius: 8px; padding: 0 10px; margin-left: 6px; letter-spacing: .05em; white-space: nowrap; }
