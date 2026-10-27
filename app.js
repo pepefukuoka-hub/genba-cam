@@ -1,6 +1,6 @@
 (function () {
   'use strict';
-  const VER = 11;
+  const VER = 12;
   const $ = (id) => document.getElementById(id);
   const errText = (e) => (e && (e.name || e.message)) ? (String(e.name || '') + (e.message ? ': ' + String(e.message).slice(0, 100) : '')) : '不明';
   const show = (id) => { document.querySelectorAll('.screen').forEach((s) => { s.hidden = s.id !== id; }); window.scrollTo(0, 0); };
@@ -53,14 +53,31 @@
     const lines = sdp.split(/\r?\n/).filter((l) => l);
     const out = lines.filter((l) => {
       if (dropExt.test(l) || dropMisc.test(l)) return false;
-      if (l.indexOf('a=candidate:') === 0) { const f = l.split(' '); return f[2].toLowerCase() === 'udp' && f[4].indexOf(':') < 0; }   // UDPのIPv4だけ
+      if (l.indexOf('a=candidate:') === 0) { const f = l.split(' '); return f[2].toLowerCase() === 'udp' && (f[4].indexOf(':') < 0 || /^[23][0-9a-f]{3}:/i.test(f[4])); }   // UDPの、IPv4と、グローバルIPv6だけ
       return true;
     });
-    // 接続先は、IPv4のUDPを、最大4つ残す。テザリングの親機は、回線用と子機向けなど、複数の住所を持つため、1つに絞ると、届かない住所を選ぶことがある
-    let n = 0;
-    const final = out.filter((l) => { if (l.indexOf('a=candidate:') !== 0) return true; return ++n <= 4; });
+    // 接続先は、IPv4を最大4つと、IPv6を最大2つ残す。IPv6は、モバイル回線どうしでも、直接つながる可能性がある。テザリングの親機は、回線用と子機向けなど、複数の住所を持つため、1つに絞ると、届かない住所を選ぶことがある
+    let n4 = 0, n6 = 0;
+    const final = out.filter((l) => { if (l.indexOf('a=candidate:') !== 0) return true; return l.split(' ')[4].indexOf(':') < 0 ? ++n4 <= 4 : ++n6 <= 2; });
     return final.join('\r\n') + '\r\n';
   }
+
+  // ---------- 住所(IPv4 と IPv6) ----------
+  function ip6ToBytes(s) {
+    const parts = s.split('%')[0].split('::'), hs = parts[0] ? parts[0].split(':') : [], ts = parts.length > 1 && parts[1] ? parts[1].split(':') : [];
+    const fill = parts.length > 1 ? 8 - hs.length - ts.length : 0, w = hs.concat(Array(Math.max(fill, 0)).fill('0'), ts);
+    if (w.length !== 8) throw new Error('IPv6の形式');
+    const out = []; w.forEach((x) => { const n = parseInt(x || '0', 16); out.push(n >> 8, n & 255); }); return out;
+  }
+  function bytesToIp6(b) { const w = []; for (let i = 0; i < 16; i += 2) w.push(((b[i] << 8) | b[i + 1]).toString(16)); return w.join(':'); }
+  const ipStr = (x) => x.v6 ? bytesToIp6(x.ip) : x.ip.join('.');
+  const putAddr = (out, x) => { out.push(x.v6 ? 6 : 4); x.ip.forEach((n) => out.push(n)); out.push(x.port >> 8, x.port & 255); };
+  function readAddrs(b, i) {   // 個数 + 各住所。{addrs, 次の位置}
+    const n = b[i++], addrs = [];
+    for (let k = 0; k < n; k++) { const v6 = b[i++] === 6, len = v6 ? 16 : 4; addrs.push({ v6, ip: Array.from(b.slice(i, i + len)), port: (b[i + len] << 8) | b[i + len + 1] }); i += len + 2; }
+    return { addrs, i };
+  }
+  const candLine = (x, k) => 'a=candidate:' + (k + 1) + ' 1 udp ' + (2122194687 - k * 256) + ' ' + ipStr(x) + ' ' + x.port + ' typ host generation 0';
 
   // ---------- 返信(見る側 → 映す側)を、小さく送る ----------
   // 返信に本当に要るのは、数値だけ(認証用の名前と合言葉、証明書の指紋、必要なら接続先)。約80バイトで、QRは小さく・読み取りやすくなる。
@@ -70,28 +87,30 @@
     const f = { ufrag: get(/^a=ice-ufrag:(.+)$/m), pwd: get(/^a=ice-pwd:(.+)$/m), fp: null, active: get(/^a=setup:(\w+)/m) !== 'passive', addrs: [] };
     const fp = get(/^a=fingerprint:sha-256 (.+)$/m); if (fp) f.fp = fp.split(':').map((h) => parseInt(h, 16));
     if (!f.ufrag || !f.pwd || !f.fp || f.fp.length !== 32) throw new Error('接続情報を取り出せません');
-    for (const l of sdp.split(/\r?\n/)) {   // 接続先は、IPv4(UDP)をすべて添える(最大4つ)。端末名(mDNS)は省く。相手が先に届くので、なくても、つながることがある
-      if (l.indexOf('a=candidate:') !== 0 || f.addrs.length >= 4) continue;
+    const v4 = [], v6 = [];   // 接続先は、IPv4(最大4つ)と、グローバルIPv6(最大2つ)。端末名(mDNS)は省く。相手が先に届くので、なくても、つながることがある
+    for (const l of sdp.split(/\r?\n/)) {
+      if (l.indexOf('a=candidate:') !== 0) continue;
       const c = l.split(' ');
-      if (c[2].toLowerCase() === 'udp' && /^\d+\.\d+\.\d+\.\d+$/.test(c[4])) f.addrs.push({ ip: c[4].split('.').map(Number), port: +c[5] });
+      if (c[2].toLowerCase() !== 'udp') continue;
+      if (/^\d+\.\d+\.\d+\.\d+$/.test(c[4])) { if (v4.length < 4) v4.push({ v6: false, ip: c[4].split('.').map(Number), port: +c[5] }); }
+      else if (/^[23][0-9a-f]{3}:/i.test(c[4])) { if (v6.length < 2) { try { v6.push({ v6: true, ip: ip6ToBytes(c[4]), port: +c[5] }); } catch (e) {} } }
     }
+    f.addrs = v4.concat(v6);
     return f;
   }
   function encodeAnswer(f) {
     const e = new TextEncoder(), u = e.encode(f.ufrag), p = e.encode(f.pwd);
-    const out = [0x41, 0x33, (f.active ? 1 : 0), u.length].concat(Array.from(u), [p.length], Array.from(p), f.fp, [f.addrs.length]);   // 'A' '3' ...
-    f.addrs.forEach((x) => out.push(x.ip[0], x.ip[1], x.ip[2], x.ip[3], x.port >> 8, x.port & 255));
+    const out = [0x41, 0x34, (f.active ? 1 : 0), u.length].concat(Array.from(u), [p.length], Array.from(p), f.fp, [f.addrs.length]);   // 'A' '4' ...
+    f.addrs.forEach((x) => putAddr(out, x));
     return Uint8Array.from(out);
   }
   function decodeAnswer(b) {   // b は 'A' '2' から始まる
-    if (b[0] !== 0x41 || b[1] !== 0x33) throw new Error('形式が違います(版がそろっていない可能性。両方のスマホで、ページを開き直してください)');
+    if (b[0] !== 0x41 || b[1] !== 0x34) throw new Error('形式が違います(版がそろっていない可能性。両方のスマホで、ページを開き直してください)');
     const flags = b[2], d = new TextDecoder(); let i = 3;
     const ul = b[i++], ufrag = d.decode(b.slice(i, i + ul)); i += ul;
     const pl = b[i++], pwd = d.decode(b.slice(i, i + pl)); i += pl;
     const fp = Array.from(b.slice(i, i + 32)); i += 32;
-    const f = { ufrag, pwd, fp, active: !!(flags & 1), addrs: [] };
-    const n = b[i++];
-    for (let k = 0; k < n; k++, i += 6) f.addrs.push({ ip: [b[i], b[i + 1], b[i + 2], b[i + 3]], port: (b[i + 4] << 8) | b[i + 5] });
+    const f = { ufrag, pwd, fp, active: !!(flags & 1), addrs: readAddrs(b, i).addrs };
     if (fp.length !== 32 || !ufrag || !pwd) throw new Error('欠けています');
     return f;
   }
@@ -102,12 +121,12 @@
     sec.forEach((l) => { const m = l.match(/^a=fmtp:(\d+) apt=(\d+)/); if (m && pts.has(m[2])) pts.add(m[1]); });   // 再送用(rtx)も
     const order = sec[0].split(' ').slice(3).filter((p) => pts.has(p));
     const mid = sec.find((l) => l.indexOf('a=mid:') === 0) || 'a=mid:0';
-    const first = f.addrs[0], ip = first ? first.ip.join('.') : '0.0.0.0', port = first ? first.port : 9;
+    const first = f.addrs[0], ip = first ? ipStr(first) : '0.0.0.0', port = first ? first.port : 9, fam = first && first.v6 ? '6' : '4';
     const fp = f.fp.map((x) => x.toString(16).padStart(2, '0').toUpperCase()).join(':');
     const codec = sec.filter((l) => { const m = l.match(/^a=(rtpmap|fmtp|rtcp-fb):(\d+)/); return m && pts.has(m[2]); });
     return head.filter((l) => /^(v=|o=|s=|t=|a=group:)/.test(l)).concat(
-      ['m=video ' + port + ' UDP/TLS/RTP/SAVPF ' + order.join(' '), 'c=IN IP4 ' + ip, 'a=rtcp:9 IN IP4 0.0.0.0'],
-      f.addrs.map((x, k) => 'a=candidate:' + (k + 1) + ' 1 udp ' + (2122194687 - k * 256) + ' ' + x.ip.join('.') + ' ' + x.port + ' typ host generation 0'),
+      ['m=video ' + port + ' UDP/TLS/RTP/SAVPF ' + order.join(' '), 'c=IN IP' + fam + ' ' + ip, 'a=rtcp:9 IN IP4 0.0.0.0'],
+      f.addrs.map(candLine),
       ['a=ice-ufrag:' + f.ufrag, 'a=ice-pwd:' + f.pwd, 'a=fingerprint:sha-256 ' + fp, 'a=setup:' + (f.active ? 'active' : 'passive'), mid],
       sec.filter((l) => /^a=extmap:\d+ (urn:3gpp:video-orientation|http:\/\/www\.ietf\.org\/id\/draft-holmer-rmcat-transport-wide-cc|urn:ietf:params:rtp-hdrext:sdes:mid)/.test(l)), ['a=recvonly', 'a=rtcp-mux'], codec).join('\r\n') + '\r\n';
   }
@@ -132,28 +151,27 @@
   function encodeOffer(f) {
     const e = new TextEncoder(), m = e.encode(f.mid), u = e.encode(f.ufrag), p = e.encode(f.pwd);
     const flags = (f.rtx ? 1 : 0) | (f.nack ? 2 : 0) | (f.pli ? 4 : 0) | (f.tcc ? 8 : 0);
-    const out = [0x4f, 0x33, flags, f.vp8, f.rtx, f.vo, f.tccExt, f.midExt].concat(ru32(f.ssrc1), ru32(f.ssrc2), [m.length], Array.from(m), [u.length], Array.from(u), [p.length], Array.from(p), f.fp, [f.addrs.length]);
-    f.addrs.forEach((x) => out.push(x.ip[0], x.ip[1], x.ip[2], x.ip[3], x.port >> 8, x.port & 255));
+    const out = [0x4f, 0x34, flags, f.vp8, f.rtx, f.vo, f.tccExt, f.midExt].concat(ru32(f.ssrc1), ru32(f.ssrc2), [m.length], Array.from(m), [u.length], Array.from(u), [p.length], Array.from(p), f.fp, [f.addrs.length]);
+    f.addrs.forEach((x) => putAddr(out, x));
     return Uint8Array.from(out);
   }
   function decodeOffer(b) {
-    if (b[0] !== 0x4f || b[1] !== 0x33) throw new Error('形式が違います(版がそろっていない可能性。両方のスマホで、ページを開き直してください)');
+    if (b[0] !== 0x4f || b[1] !== 0x34) throw new Error('形式が違います(版がそろっていない可能性。両方のスマホで、ページを開き直してください)');
     const d = new TextDecoder(), flags = b[2], f = { vp8: b[3], rtx: b[4], vo: b[5], tccExt: b[6], midExt: b[7], nack: !!(flags & 2), pli: !!(flags & 4), tcc: !!(flags & 8) };
     f.ssrc1 = rd32(b, 8); f.ssrc2 = rd32(b, 12); let i = 16;
     const ml = b[i++]; f.mid = d.decode(b.slice(i, i + ml)); i += ml;
     const ul = b[i++]; f.ufrag = d.decode(b.slice(i, i + ul)); i += ul;
     const pl = b[i++]; f.pwd = d.decode(b.slice(i, i + pl)); i += pl;
-    f.fp = Array.from(b.slice(i, i + 32)); i += 32; f.addrs = []; const n = b[i++];
-    for (let k = 0; k < n; k++, i += 6) f.addrs.push({ ip: [b[i], b[i + 1], b[i + 2], b[i + 3]], port: (b[i + 4] << 8) | b[i + 5] });
+    f.fp = Array.from(b.slice(i, i + 32)); i += 32; f.addrs = readAddrs(b, i).addrs;
     if (f.fp.length !== 32 || !f.ufrag || !f.pwd || !f.addrs.length) throw new Error('欠けています');
     return f;
   }
   function buildOfferSdp(f) {   // 受け取った数値から、映像を送るだけの offer を組み立てる
-    const ip = f.addrs[0].ip.join('.'), port0 = f.addrs[0].port, fp = f.fp.map((x) => x.toString(16).padStart(2, '0').toUpperCase()).join(':');
+    const ip = ipStr(f.addrs[0]), fam = f.addrs[0].v6 ? '6' : '4', port0 = f.addrs[0].port, fp = f.fp.map((x) => x.toString(16).padStart(2, '0').toUpperCase()).join(':');
     const pts = [f.vp8].concat(f.rtx ? [f.rtx] : []);
     const L = ['v=0', 'o=- 1 2 IN IP4 127.0.0.1', 's=-', 't=0 0', 'a=group:BUNDLE ' + f.mid,
-      'm=video ' + port0 + ' UDP/TLS/RTP/SAVPF ' + pts.join(' '), 'c=IN IP4 ' + ip, 'a=rtcp:9 IN IP4 0.0.0.0']
-      .concat(f.addrs.map((x, k) => 'a=candidate:' + (k + 1) + ' 1 udp ' + (2122194687 - k * 256) + ' ' + x.ip.join('.') + ' ' + x.port + ' typ host generation 0'),
+      'm=video ' + port0 + ' UDP/TLS/RTP/SAVPF ' + pts.join(' '), 'c=IN IP' + fam + ' ' + ip, 'a=rtcp:9 IN IP4 0.0.0.0']
+      .concat(f.addrs.map(candLine),
       ['a=ice-ufrag:' + f.ufrag, 'a=ice-pwd:' + f.pwd, 'a=fingerprint:sha-256 ' + fp, 'a=setup:actpass', 'a=mid:' + f.mid]);
     if (f.vo) L.push('a=extmap:' + f.vo + ' urn:3gpp:video-orientation');
     if (f.tccExt) L.push('a=extmap:' + f.tccExt + ' http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01');
@@ -167,11 +185,11 @@
     L.push('a=ssrc:' + f.ssrc1 + ' cname:g'); if (f.rtx && f.ssrc2) L.push('a=ssrc:' + f.ssrc2 + ' cname:g');
     return L.join('\r\n') + '\r\n';
   }
-  // 見る側の入口: {kind:'o3', code} は小さな形式、{kind:'o', code} は長い形式(予備)
-  async function offerSdpFrom(spec) { return spec.kind === 'o3' ? buildOfferSdp(decodeOffer(fromB64u(spec.code))) : unpack(spec.code); }
+  // 見る側の入口: {kind:'o4', code} は小さな形式、{kind:'o', code} は長い形式(予備)
+  async function offerSdpFrom(spec) { return spec.kind === 'o4' ? buildOfferSdp(decodeOffer(fromB64u(spec.code))) : unpack(spec.code); }
   function parseOfferText(t) {   // リンク・コード・QRの文字から、取り出す
-    const m2 = t.match(/#?o3=([A-Za-z0-9_-]+)/), m1 = t.match(/#?o=([A-Za-z0-9_-]+)/);
-    if (m2) return { kind: 'o3', code: m2[1] };
+    const m2 = t.match(/#?o4=([A-Za-z0-9_-]+)/), m1 = t.match(/#?o=([A-Za-z0-9_-]+)/);
+    if (m2) return { kind: 'o4', code: m2[1] };
     if (m1) return { kind: 'o', code: m1[1] };
     return /^[A-Za-z0-9_-]+$/.test(t.trim()) ? { kind: 'o', code: t.trim() } : null;
   }
@@ -254,7 +272,7 @@
       await gathered(pc);
       offerSlim = slim(pc.localDescription.sdp);
       let tail;
-      try { tail = '#o3=' + toB64u(encodeOffer(offerFields(offerSlim))); }   // 小さな形式(QRが小さく、読み取りやすい)
+      try { tail = '#o4=' + toB64u(encodeOffer(offerFields(offerSlim))); }   // 小さな形式(QRが小さく、読み取りやすい)
       catch (e) { tail = '#o=' + await pack(offerSlim); }                     // 取り出せない端末は、長い形式
       const url = location.origin + location.pathname + tail;
       drawQR($('qrOffer'), url);
@@ -273,7 +291,7 @@
       g.drawImage(v, 0, 0, c.width, c.height);
       const img = g.getImageData(0, 0, c.width, c.height), r = window.jsQR(img.data, c.width, c.height, { inversionAttempts: 'dontInvert' });
       const b = r && r.binaryData;
-      if (b && b.length > 40 && b[0] === 0x41 && b[1] === 0x33) acceptBytes(Uint8Array.from(b));
+      if (b && b.length > 40 && b[0] === 0x41 && b[1] === 0x34) acceptBytes(Uint8Array.from(b));
     }, 250);
   }
   const acceptAnswer = (code) => { try { acceptBytes(fromB64u(code.trim())); } catch (e) { sMsg('コードを読み込めませんでした。'); } };   // 貼り付けのコード
@@ -283,7 +301,7 @@
     try { await pc.setRemoteDescription({ type: 'answer', sdp: buildAnswerSdp(offerSlim, decodeAnswer(bytes)) }); }
     catch (e) { answered = false; $('sState').textContent = '読み取りを待っています'; sMsg('返信コードを読み込めませんでした(' + errText(e) + ')。もう一度、読み取らせてください。'); }
   }
-  $('usePaste').onclick = () => { const t = $('pasteAnswer').value.trim(); if (t) acceptAnswer(t.indexOf('A3.') === 0 ? t.slice(3) : t); };
+  $('usePaste').onclick = () => { const t = $('pasteAnswer').value.trim(); if (t) acceptAnswer(t.indexOf('A4.') === 0 ? t.slice(3) : t); };
 
   async function onSenderState() {
     const s = pc.connectionState;
@@ -330,7 +348,7 @@
       await gathered(pc);
       const bytes = encodeAnswer(answerFields(pc.localDescription.sdp));
       drawQR($('qrAnswer'), bytesToStr(bytes));   // 読み取りやすいよう、文字ではなくバイナリで入れる
-      const code = 'A3.' + toB64u(bytes);
+      const code = 'A4.' + toB64u(bytes);
       $('copyAnswer').onclick = () => copy(code, $('copyAnswer'));
       $('vAnswer').hidden = false; $('vState').textContent = '映す側の、読み取りを待っています'; watchConnect(pc, $('vNet'));
     } catch (e) { $('vState').textContent = '失敗しました'; vMsg('接続情報を読み込めませんでした(' + errText(e) + ')。映す側のQRコードを、もう一度、読み取ってください。直らないときは、トップの「この端末で診断」の結果を教えてください。'); }
@@ -365,7 +383,7 @@
       const sc = Math.min(1, 1280 / v.videoWidth); c.width = Math.round(v.videoWidth * sc); c.height = Math.round(v.videoHeight * sc);
       g.drawImage(v, 0, 0, c.width, c.height);
       const d = g.getImageData(0, 0, c.width, c.height), r = window.jsQR(d.data, c.width, c.height, { inversionAttempts: 'dontInvert' });
-      const spec = r && r.data && /#o3?=/.test(r.data) ? parseOfferText(r.data) : null;
+      const spec = r && r.data && /#o4?=/.test(r.data) ? parseOfferText(r.data) : null;
       if (spec) { stopViewerScan(); startViewer(spec); }
     }, 250);
   };
@@ -395,7 +413,7 @@
       A = newPC(); st.getTracks().forEach((t) => A.addTrack(t, st)); preferCodecs(A);
       await A.setLocalDescription(await A.createOffer()); await gathered(A);
       const offerSlim = slim(A.localDescription.sdp); let spec, size;
-      try { const bytes = encodeOffer(offerFields(offerSlim)); spec = { kind: 'o3', code: toB64u(bytes) }; size = bytes.length + 'バイト(小さな形式)'; }
+      try { const bytes = encodeOffer(offerFields(offerSlim)); spec = { kind: 'o4', code: toB64u(bytes) }; size = bytes.length + 'バイト(小さな形式)'; }
       catch (e) { spec = { kind: 'o', code: await pack(offerSlim) }; size = spec.code.length + '文字(長い形式。理由: ' + errText(e) + ')'; }
       log(true, '1 映す側の接続情報を作成(' + size + ')');
       B = newPC(); const vid = document.createElement('video'); vid.muted = true; vid.playsInline = true;
@@ -441,7 +459,7 @@
   $('sBack').onclick = back; $('vBack').onclick = back;
 
   const initial = parseOfferText(location.hash);
-  if (initial && /^#o3?=/.test(location.hash)) { history.replaceState(null, '', location.pathname); startViewer(initial); }   // QRコードから開いたときは、そのまま見る側へ
+  if (initial && /^#o4?=/.test(location.hash)) { history.replaceState(null, '', location.pathname); startViewer(initial); }   // QRコードから開いたときは、そのまま見る側へ
 
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 })();
