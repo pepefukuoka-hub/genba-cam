@@ -1,6 +1,6 @@
 (function () {
   'use strict';
-  const VER = 13;
+  const VER = 15;
   const $ = (id) => document.getElementById(id);
   const errText = (e) => (e && (e.name || e.message)) ? (String(e.name || '') + (e.message ? ': ' + String(e.message).slice(0, 100) : '')) : '不明';
   const show = (id) => { document.querySelectorAll('.screen').forEach((s) => { s.hidden = s.id !== id; }); window.scrollTo(0, 0); };
@@ -383,7 +383,7 @@
   function onViewerState() {
     const s = pc.connectionState;
     if (s === 'connected') {
-      $('vPair').hidden = true; $('vLive').hidden = false; $('vState').textContent = '見ています'; vMsg(''); keepAwake();
+      $('vPair').hidden = true; $('vLive').hidden = false; $('vState').textContent = '見ています'; vMsg(''); keepAwake(); rotMain.layout();
       clearInterval(statTimer); let last = null;
       statTimer = setInterval(async () => {
         try {
@@ -415,11 +415,35 @@
       if (spec) { stopViewerScan(); startViewer(spec); }
     }, 250);
   };
-  $('full').onclick = () => { const v = $('remote'), f = v.requestFullscreen || v.webkitRequestFullscreen || v.webkitEnterFullscreen; if (f) try { f.call(v); } catch (e) {} };
+  $('full').onclick = () => { if (rotMain.full()) return; const v = $('remote'), f = v.requestFullscreen || v.webkitRequestFullscreen || v.webkitEnterFullscreen; if (f) try { f.call(v); } catch (e) {} };
   $('useOffer').onclick = () => {
     const spec = parseOfferText($('pasteOffer').value.trim());
     if (spec) startViewer(spec); else vMsg('リンクを読み込めませんでした。');
   };
+
+
+  // ---------- 映像の回転(90度ずつ) ----------
+  // 映像を、箱で包んで、回した分だけ、箱の大きさを合わせる。全画面は、箱ごとにする(回転を保つため)
+  function makeRot(video, btn, key) {
+    const box = document.createElement('div'); box.className = 'rbox';
+    video.parentNode.insertBefore(box, video); box.appendChild(video);
+    let deg = 0; try { deg = (+localStorage.getItem(key) || 0) % 360; } catch (e) {}
+    const layout = () => {
+      const fs = document.fullscreenElement === box || document.webkitFullscreenElement === box;
+      const vw = video.videoWidth || 16, vh = video.videoHeight || 9, odd = deg % 180 !== 0, asp = odd ? vh / vw : vw / vh;
+      const maxW = fs ? window.innerWidth : (box.parentNode.clientWidth || window.innerWidth - 36), maxH = fs ? window.innerHeight : window.innerHeight * 0.72;
+      let bw = maxW, bh = bw / asp; if (bh > maxH) { bh = maxH; bw = bh * asp; }
+      box.style.width = bw + 'px'; box.style.height = bh + 'px';
+      video.style.width = (odd ? bh : bw) + 'px'; video.style.height = (odd ? bw : bh) + 'px';
+      video.style.transform = 'translate(-50%,-50%) rotate(' + deg + 'deg)';
+    };
+    if (btn) btn.onclick = () => { deg = (deg + 90) % 360; try { localStorage.setItem(key, String(deg)); } catch (e) {} layout(); };
+    video.addEventListener('loadedmetadata', layout); video.addEventListener('resize', layout);
+    window.addEventListener('resize', layout); document.addEventListener('fullscreenchange', layout); document.addEventListener('webkitfullscreenchange', layout);
+    layout();
+    return { box, layout, full() { const f = box.requestFullscreen || box.webkitRequestFullscreen; if (f) { try { f.call(box); return true; } catch (e) {} } return false; } };
+  }
+  const rotMain = makeRot($('remote'), $('rot'), 'genba.rot');
 
   // ---------- この端末での自己診断 ----------
   // 1台の中で、映す側と見る側を両方動かし、接続の手順を通して試す。端末ごとの非対応・相性を見つけるため

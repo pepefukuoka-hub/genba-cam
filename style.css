@@ -48,3 +48,7 @@ summary { cursor: pointer; padding: 6px 0; }
 pre#diag, pre.net { margin: 0; white-space: pre-wrap; word-break: break-all; font: 12px/1.5 ui-monospace, Menlo, monospace; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 10px; }
 #vPrev { width: 100%; max-height: 40vh; object-fit: cover; border-radius: 12px; background: #000; }
 #vScanBox { display: flex; flex-direction: column; gap: 6px; }
+
+.rbox { position: relative; overflow: hidden; margin: 0 auto; background: #000; border-radius: 12px; max-width: 100%; }
+.rbox > video { position: absolute; left: 50%; top: 50%; max-width: none !important; max-height: none !important; border-radius: 0 !important; object-fit: contain; }
+.rbox:fullscreen { border-radius: 0; }
