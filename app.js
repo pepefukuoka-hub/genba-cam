@@ -1,6 +1,6 @@
 (function () {
   'use strict';
-  const VER = 12;
+  const VER = 13;
   const $ = (id) => document.getElementById(id);
   const errText = (e) => (e && (e.name || e.message)) ? (String(e.name || '') + (e.message ? ': ' + String(e.message).slice(0, 100) : '')) : '不明';
   const show = (id) => { document.querySelectorAll('.screen').forEach((s) => { s.hidden = s.id !== id; }); window.scrollTo(0, 0); };
@@ -194,6 +194,32 @@
     return /^[A-Za-z0-9_-]+$/.test(t.trim()) ? { kind: 'o', code: t.trim() } : null;
   }
 
+  // ---------- つながっている経路(通信料がかかるか) ----------
+  // 同じネットワークの中(プライベートな住所どうし、または、同じIPv6の範囲)なら、モバイル回線は通らない
+  const sdpCands = (sdp) => (sdp || '').split(/\r?\n/).filter((l) => l.indexOf('a=candidate:') === 0).map((l) => { const c = l.split(' '); return { ip: c[4], port: +c[5] }; });
+  const priv4 = (ip) => { const m = ip.match(/^(\d+)\.(\d+)\./); if (!m) return false; const x = +m[1], y = +m[2]; return x === 10 || x === 127 || (x === 172 && y >= 16 && y <= 31) || (x === 192 && y === 168) || (x === 169 && y === 254); };
+  async function pathInfo(p) {
+    try {
+      const rep = await p.getStats(), byId = {}; let sel = null;
+      rep.forEach((r) => { byId[r.id] = r; });
+      rep.forEach((r) => { if (r.type === 'transport' && r.selectedCandidatePairId) sel = byId[r.selectedCandidatePairId]; });
+      if (!sel) rep.forEach((r) => { if (r.type === 'candidate-pair' && r.state === 'succeeded' && (r.nominated || r.selected)) sel = r; });
+      if (!sel) return null;
+      const lc = byId[sel.localCandidateId], rc = byId[sel.remoteCandidateId];
+      if (!lc || !rc) return null;
+      const L = sdpCands(p.localDescription && p.localDescription.sdp), R = sdpCands(p.remoteDescription && p.remoteDescription.sdp);
+      const la = lc.address || lc.ip || (L.find((x) => x.port === lc.port) || {}).ip || '', ra = rc.address || rc.ip || (R.find((x) => x.port === rc.port) || {}).ip || '';
+      if (lc.networkType === 'cellular' || rc.networkType === 'cellular') return { local: false, text: 'モバイル回線を通っています(通信料がかかります)' };
+      if (priv4(la) && priv4(ra)) return { local: true, text: '同じWi-Fi(テザリング)の中を、直接通っています(通信料はかかりません)' };
+      if (la.indexOf(':') >= 0 && ra.indexOf(':') >= 0 && la.split(':').slice(0, 4).join(':') === ra.split(':').slice(0, 4).join(':')) return { local: true, text: '同じネットワークの中を、直接通っています(通信料はかかりません)' };
+      if (la.indexOf(':') >= 0 || ra.indexOf(':') >= 0) return { local: false, text: 'IPv6で、ネットワークの外を通っています(どちらかがモバイル回線なら、通信料がかかります)' };
+      return { local: false, text: 'ネットワークの外を通っています(通信料がかかる可能性があります)' };
+    } catch (e) { return null; }
+  }
+  function showPath(p, el) {
+    pathInfo(p).then((r) => { if (!r) return; el.textContent = '経路: ' + r.text; el.style.color = r.local ? 'var(--accent)' : '#e5484d'; });
+  }
+
   // ---------- 接続の詳しい報告 ----------
   // つながらないとき、どの住所を持ち、どの組み合わせを試し、どうなったかを、画面に出す(原因を絞るため)
   async function netReport(p) {
@@ -309,6 +335,7 @@
       clearInterval(scanTimer);
       $('sPair').hidden = true; $('sLive').hidden = false; $('sState').textContent = '映しています'; sMsg('');
       keepAwake();
+      setTimeout(() => showPath(pc, $('sPath')), 1500); setInterval(() => showPath(pc, $('sPath')), 5000);
       try {   // 上限を決めて、電波が弱いときも粘る
         const sender = pc.getSenders()[0], p = sender.getParameters();
         if (!p.encodings || !p.encodings.length) p.encodings = [{}];
@@ -365,6 +392,7 @@
           if (!t) return;
           const now = performance.now(), mbps = last ? ((t.bytesReceived - last.b) * 8 / ((now - last.t) / 1000) / 1e6) : 0;
           last = { b: t.bytesReceived, t: now };
+          showPath(pc, $('vPath'));
           $('stats').textContent = (t.frameWidth ? t.frameWidth + '×' + t.frameHeight + ' / ' : '') + Math.round(t.framesPerSecond || 0) + ' fps / ' + mbps.toFixed(1) + ' Mbps';
         } catch (e) {}
       }, 1000);
