@@ -1,6 +1,6 @@
 (function () {
   'use strict';
-  const VER = 13;
+  const VER = 14;
   const $ = (id) => document.getElementById(id);
   const errText = (e) => (e && (e.name || e.message)) ? (String(e.name || '') + (e.message ? ': ' + String(e.message).slice(0, 100) : '')) : '不明';
   const show = (id) => { document.querySelectorAll('.screen').forEach((s) => { s.hidden = s.id !== id; }); window.scrollTo(0, 0); };
@@ -420,6 +420,101 @@
     const spec = parseOfferText($('pasteOffer').value.trim());
     if (spec) startViewer(spec); else vMsg('リンクを読み込めませんでした。');
   };
+
+
+  // ---------- 2台を同時に見る(iPad向け。横にすると、左と右に並ぶ) ----------
+  const slots = [];
+  function makeSlot(i) {
+    const lr = i === 0 ? '左' : '右', ud = i === 0 ? '上' : '下';
+    const root = document.createElement('div'); root.className = 'pane';
+    root.innerHTML =
+      '<div class="phead"><span class="lab"><span class="lr">' + lr + '</span><span class="ud">' + ud + '</span></span>' +
+      '<input class="pname" maxlength="12" placeholder="名前(なくてもOK)" aria-label="名前"><span class="pst">待っています</span></div>' +
+      '<div class="ppair">' +
+        '<button type="button" class="pscan">このカメラで、映す側のQRを読み取る</button>' +
+        '<div class="pscanbox" hidden><video playsinline muted autoplay></video><p class="msg">映す側のQRコードを、この映像に映してください。</p></div>' +
+        '<details><summary>QRコードが読めないとき</summary><textarea rows="2" placeholder="映す側のリンクを貼り付け"></textarea><button type="button" class="small puse">このリンクでつなぐ</button></details>' +
+        '<div class="pans" hidden><p class="lead">このQRコードを、映す側のカメラで読み取らせてください。</p><canvas class="qr" aria-label="返信用のQRコード"></canvas></div>' +
+      '</div>' +
+      '<div class="plive" hidden><video playsinline muted autoplay></video><span class="tag"></span></div>' +
+      '<div class="row"><button type="button" class="small pfull" hidden>全画面</button><button type="button" class="small pre">つなぎ直す</button><span class="msg pstat"></span></div>' +
+      '<p class="msg ppath"></p><p class="msg pmsg" role="status"></p><pre class="net" hidden></pre>';
+    const q = (s) => root.querySelector(s);
+    const S = { i, root, pc: null, vs: null, timer: 0, stat: 0 };
+    const nameKey = 'genba.slot' + i;
+    try { q('.pname').value = localStorage.getItem(nameKey) || ''; } catch (e) {}
+    const tag = () => { q('.tag').textContent = lr + (q('.pname').value ? ' ' + q('.pname').value : ''); };
+    q('.pname').addEventListener('input', () => { try { localStorage.setItem(nameKey, q('.pname').value); } catch (e) {} tag(); });
+    tag();
+    const st = (t) => { q('.pst').textContent = t; }, msg = (t) => { q('.pmsg').textContent = t; };
+    function stopScan() { clearInterval(S.timer); if (S.vs) { S.vs.getTracks().forEach((t) => t.stop()); S.vs = null; } q('.pscanbox').hidden = true; q('.pscan').disabled = false; }
+    S.stopScan = stopScan;
+    function reset() {
+      stopScan(); clearInterval(S.stat);
+      if (S.pc) { try { S.pc.close(); } catch (e) {} S.pc = null; }
+      const lv = q('.plive video'); lv.srcObject = null;
+      q('.plive').hidden = true; q('.ppair').hidden = false; q('.pans').hidden = true; q('.pscan').hidden = false; q('details').hidden = false;
+      q('.pfull').hidden = true; q('.pstat').textContent = ''; q('.ppath').textContent = ''; q('.pnet'); msg(''); st('待っています');
+      const n = q('.net'); n.hidden = true; n.textContent = '';
+    }
+    q('.pre').onclick = reset;
+    async function begin(spec) {
+      stopScan(); q('.pscan').hidden = true; q('details').hidden = true; st('接続の準備をしています…'); msg('');
+      try {
+        const p = newPC(); S.pc = p;
+        p.ontrack = (e) => { const v = q('.plive video'); v.srcObject = e.streams[0] || new MediaStream([e.track]); v.play().catch(() => {}); };
+        p.onconnectionstatechange = () => {
+          const s = p.connectionState;
+          if (s === 'connected') {
+            q('.ppair').hidden = true; q('.plive').hidden = false; q('.pfull').hidden = false; st('見ています'); msg(''); keepAwake(); updateDualState();
+            clearInterval(S.stat); let last = null;
+            S.stat = setInterval(async () => {
+              try {
+                const rep = await p.getStats(); let t = null; rep.forEach((r) => { if (r.type === 'inbound-rtp' && r.kind === 'video') t = r; });
+                if (!t) return; const now = performance.now(), mbps = last ? ((t.bytesReceived - last.b) * 8 / ((now - last.t) / 1000) / 1e6) : 0; last = { b: t.bytesReceived, t: now };
+                showPath(p, q('.ppath'));
+                q('.pstat').textContent = (t.frameWidth ? t.frameWidth + '×' + t.frameHeight + ' / ' : '') + Math.round(t.framesPerSecond || 0) + ' fps / ' + mbps.toFixed(1) + ' Mbps';
+              } catch (e) {}
+            }, 1000);
+          } else if (s === 'disconnected') st('切れかけています…');
+          else if (s === 'failed' || s === 'closed') { st('つながりませんでした'); msg('同じWi-Fi(またはテザリング)か、確認してください。「つなぎ直す」を押してください。'); updateDualState(); }
+        };
+        await p.setRemoteDescription({ type: 'offer', sdp: await offerSdpFrom(spec) });
+        try { const rc = RTCRtpReceiver.getCapabilities('video').codecs; p.getTransceivers()[0].setCodecPreferences(rc.filter((c) => /video\/VP8$/i.test(c.mimeType)).concat(rc.filter((c) => /video\/rtx$/i.test(c.mimeType)))); } catch (e) {}
+        await p.setLocalDescription(await p.createAnswer()); await gathered(p);
+        drawQR(q('.qr'), bytesToStr(encodeAnswer(answerFields(p.localDescription.sdp))));
+        q('.pans').hidden = false; st('映す側の、読み取りを待っています'); watchConnect(p, q('.net'));
+      } catch (e) { st('失敗しました'); msg('接続情報を読み込めませんでした(' + errText(e) + ')。「つなぎ直す」を押して、もう一度、読み取ってください。'); q('.pscan').hidden = false; q('details').hidden = false; }
+    }
+    q('.puse').onclick = () => { const spec = parseOfferText(q('textarea').value.trim()); if (spec) begin(spec); else msg('リンクを読み込めませんでした。'); };
+    q('.pscan').onclick = async () => {
+      slots.forEach((o) => { if (o !== S) o.stopScan(); });   // 読み取りは、同時に1か所だけ
+      msg(''); q('.pscan').disabled = true;
+      try { S.vs = await cam('environment'); } catch (e) { q('.pscan').disabled = false; msg('カメラを開けませんでした(' + errText(e) + ')。'); return; }
+      const v = q('.pscanbox video'); v.srcObject = S.vs; v.play().catch(() => {}); q('.pscanbox').hidden = false;
+      const c = document.createElement('canvas'), g = c.getContext('2d', { willReadFrequently: true });
+      S.timer = setInterval(() => {
+        if (!v.videoWidth) return;
+        const sc = Math.min(1, 1280 / v.videoWidth); c.width = Math.round(v.videoWidth * sc); c.height = Math.round(v.videoHeight * sc);
+        g.drawImage(v, 0, 0, c.width, c.height);
+        const d = g.getImageData(0, 0, c.width, c.height), r = window.jsQR(d.data, c.width, c.height, { inversionAttempts: 'dontInvert' });
+        const spec = r && r.data && /#o4?=/.test(r.data) ? parseOfferText(r.data) : null;
+        if (spec) begin(spec);
+      }, 250);
+    };
+    q('.pfull').onclick = () => { const v = q('.plive video'), f = v.requestFullscreen || v.webkitRequestFullscreen || v.webkitEnterFullscreen; if (f) try { f.call(v); } catch (e) {} };
+    return S;
+  }
+  function updateDualState() {
+    const n = slots.filter((s) => s.pc && s.pc.connectionState === 'connected').length;
+    $('dState').textContent = n === 2 ? '2台とも、見ています' : n === 1 ? '1台つながっています' : '2台のカメラを、つなぎます';
+  }
+  function startDual() {
+    show('dual');
+    if (!slots.length) { const g = $('dualGrid'); for (let i = 0; i < 2; i++) { const s = makeSlot(i); slots.push(s); g.appendChild(s.root); } }
+  }
+  $('goDual').onclick = startDual;
+  $('dBack').onclick = () => { location.href = location.pathname; };
 
   // ---------- この端末での自己診断 ----------
   // 1台の中で、映す側と見る側を両方動かし、接続の手順を通して試す。端末ごとの非対応・相性を見つけるため

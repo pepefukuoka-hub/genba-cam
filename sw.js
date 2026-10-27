@@ -1,5 +1,5 @@
 // 一度開いたあとは、電波がなくても画面を開けるようにする(自分のファイルだけを保存)
-const CACHE = 'genba-v7';
+const CACHE = 'genba-v14';
 const FILES = ['./', 'index.html', 'app.js', 'style.css', 'vendor/qrcode.min.js', 'vendor/jsQR.js', 'manifest.webmanifest', 'icon-180.png', 'icon-512.png'];
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', (e) => {
