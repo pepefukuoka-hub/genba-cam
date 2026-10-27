@@ -10,30 +10,33 @@
 <title>現場の目</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-180.png">
-<link rel="stylesheet" href="style.css?v=15">
+<link rel="stylesheet" href="style.css?v=16">
 </head>
 <body>
 
-<!-- はじめの画面 -->
+<!-- はじめの画面: 使い方を選ぶ -->
 <main class="screen" id="home">
   <h1>現場の目</h1>
-  <p class="lead">スマホ2台を、Wi-Fiでつなぎます。片方のカメラの映像を、もう片方で見ます。</p>
-  <button type="button" class="primary" id="goSender">映す側(カメラを現場に置く)</button>
-  <button type="button" id="goViewer">見る側</button>
-  <ol class="steps">
-    <li>2台を、同じWi-Fiにつなぎます。ルーターがなければ、片方のスマホの「テザリング(インターネット共有)」に、もう片方をつなぎます。</li>
-    <li>映す側で「映す側」を押すと、QRコードが出ます。</li>
-    <li>見る側のスマホで、そのQRコードを読み取ります。標準のカメラで読み取って、出てきたページを開くか、「見る側」の中の、カメラの読み取りボタンを使います。</li>
-    <li>見る側に出たQRコードを、映す側のカメラに映します(10〜30 cmまで近づけ、画面の明るさは最大に)。</li>
-    <li>つながったら、離れても大丈夫です。</li>
-  </ol>
-  <p class="msg">映像は、スマホ同士で直接送ります。外のサーバーには、送りません。</p>
+  <p class="lead">スマホやiPadを、Wi-Fiでつなぎます。カメラの映像を、ほかの端末で見ます。まず、使い方を選んでください。</p>
+  <button type="button" class="primary mode" id="m1"><b>① 映す1台 → 見る1台</b><span>スマホ2台。いちばん基本です</span></button>
+  <button type="button" class="primary mode" id="m2"><b>② 映す2台 → 見る1台</b><span>2か所のカメラを、1台(iPad向け)で、左右に並べて見ます</span></button>
+  <button type="button" class="primary mode" id="m3"><b>③ 映す1台 → 見る2台</b><span>1つのカメラを、2台で同時に見ます</span></button>
+  <p class="msg">映像は、端末同士で直接送ります。外のサーバーには、送りません。同じWi-Fi(またはテザリング)の中なら、通信料はかかりません。</p>
   <div class="row">
     <button type="button" class="small" id="diagBtn">この端末で診断</button>
     <button type="button" class="small" id="addrBtn">住所を調べる(テザリング用)</button>
   </div>
   <pre id="diag" hidden></pre>
-  <p class="msg" id="ver">版 15</p>
+  <p class="msg" id="ver">版 16</p>
+</main>
+
+<!-- 選んだ使い方で、この端末の役目を選ぶ -->
+<main class="screen" id="role" hidden>
+  <header class="bar"><button type="button" class="small" id="roleBack">戻る</button><span id="roleTitle"></span></header>
+  <p class="lead">この端末は、どちらですか。</p>
+  <button type="button" class="primary" id="goSender">映す側</button>
+  <button type="button" class="primary" id="goViewer">見る側</button>
+  <ol class="steps" id="roleSteps"></ol>
 </main>
 
 <!-- 映す側 -->
@@ -69,6 +72,28 @@
   </section>
   <p class="msg" id="sMsg" role="status"></p>
   <pre class="net" id="sNet" hidden></pre>
+</main>
+
+<!-- 見る側(2画面) -->
+<main class="screen wide" id="dual" hidden>
+  <header class="bar">
+    <button type="button" class="small" id="dBack">戻る</button>
+    <span id="dState">2台のカメラを、つなぎます</span>
+  </header>
+  <p class="msg">映す側は、2台とも「映す側」を押します。それぞれのQRを、「左」「右」の順に、読み取ってください。</p>
+  <div id="dualGrid"></div>
+</main>
+
+<!-- 映す側(見る側が2台) -->
+<main class="screen" id="sender2" hidden>
+  <header class="bar">
+    <button type="button" class="small" id="s2Back">戻る</button>
+    <span id="s2State">準備しています…</span>
+  </header>
+  <video id="prev2" playsinline muted autoplay></video>
+  <div id="s2Cards"></div>
+  <div class="row"><button type="button" class="small" id="flip2">カメラ切替(前/後ろ)</button></div>
+  <p class="msg" id="s2Msg" role="status"></p>
 </main>
 
 <!-- 見る側 -->
@@ -113,6 +138,6 @@
 
 <script src="vendor/qrcode.min.js"></script>
 <script src="vendor/jsQR.js"></script>
-<script src="app.js?v=15"></script>
+<script src="app.js?v=16"></script>
 </body>
 </html>

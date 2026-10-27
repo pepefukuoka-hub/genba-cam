@@ -1,6 +1,6 @@
 (function () {
   'use strict';
-  const VER = 15;
+  const VER = 16;
   const $ = (id) => document.getElementById(id);
   const errText = (e) => (e && (e.name || e.message)) ? (String(e.name || '') + (e.message ? ': ' + String(e.message).slice(0, 100) : '')) : '不明';
   const show = (id) => { document.querySelectorAll('.screen').forEach((s) => { s.hidden = s.id !== id; }); window.scrollTo(0, 0); };
@@ -422,6 +422,108 @@
   };
 
 
+  // ---------- 2台を同時に見る(iPad向け。横にすると、左と右に並ぶ) ----------
+  const slots = [];
+  function makeSlot(i) {
+    const lr = i === 0 ? '左' : '右', ud = i === 0 ? '上' : '下';
+    const root = document.createElement('div'); root.className = 'pane';
+    root.innerHTML =
+      '<div class="phead"><span class="lab"><span class="lr">' + lr + '</span><span class="ud">' + ud + '</span></span>' +
+      '<input class="pname" maxlength="12" placeholder="名前(なくてもOK)" aria-label="名前"><span class="pst">待っています</span></div>' +
+      '<div class="ppair">' +
+        '<button type="button" class="pscan">このカメラで、映す側のQRを読み取る</button>' +
+        '<div class="pscanbox" hidden><video playsinline muted autoplay></video><p class="msg">映す側のQRコードを、この映像に映してください。</p></div>' +
+        '<details><summary>QRコードが読めないとき</summary><textarea rows="2" placeholder="映す側のリンクを貼り付け"></textarea><button type="button" class="small puse">このリンクでつなぐ</button></details>' +
+        '<div class="pans" hidden><p class="lead">このQRコードを、映す側のカメラで読み取らせてください。</p><canvas class="qr" aria-label="返信用のQRコード"></canvas></div>' +
+      '</div>' +
+      '<div class="plive" hidden><video playsinline muted autoplay></video><span class="tag"></span></div>' +
+      '<div class="row"><button type="button" class="small pfull" hidden>全画面</button><button type="button" class="small prot">90°回転</button><button type="button" class="small pzoom">拡大</button><button type="button" class="small pre">つなぎ直す</button><span class="msg pstat"></span></div>' +
+      '<p class="msg ppath"></p><p class="msg pmsg" role="status"></p><pre class="net" hidden></pre>';
+    const q = (s) => root.querySelector(s);
+    const S = { i, root, pc: null, vs: null, timer: 0, stat: 0 };
+    const rot = makeRot(q('.plive video'), q('.prot'), 'genba.rot' + i); rot.box.appendChild(q('.tag')); S.rot = rot;
+    const nameKey = 'genba.slot' + i;
+    try { q('.pname').value = localStorage.getItem(nameKey) || ''; } catch (e) {}
+    const tag = () => { q('.tag').textContent = lr + (q('.pname').value ? ' ' + q('.pname').value : ''); };
+    q('.pname').addEventListener('input', () => { try { localStorage.setItem(nameKey, q('.pname').value); } catch (e) {} tag(); });
+    tag();
+    const st = (t) => { q('.pst').textContent = t; }, msg = (t) => { q('.pmsg').textContent = t; };
+    function stopScan() { clearInterval(S.timer); if (S.vs) { S.vs.getTracks().forEach((t) => t.stop()); S.vs = null; } q('.pscanbox').hidden = true; q('.pscan').disabled = false; }
+    S.stopScan = stopScan;
+    function reset() {
+      stopScan(); clearInterval(S.stat);
+      if (S.pc) { try { S.pc.close(); } catch (e) {} S.pc = null; }
+      const lv = q('.plive video'); lv.srcObject = null;
+      q('.plive').hidden = true; q('.ppair').hidden = false; q('.pans').hidden = true; q('.pscan').hidden = false; q('details').hidden = false;
+      q('.pfull').hidden = true; q('.pstat').textContent = ''; q('.ppath').textContent = ''; q('.pnet'); msg(''); st('待っています');
+      const n = q('.net'); n.hidden = true; n.textContent = '';
+    }
+    q('.pre').onclick = reset;
+    q('.pzoom').onclick = () => {   // この枠だけを、画面いっぱいに広げる(もう一度押すと戻る)
+      const grid = $('dualGrid'), on = !root.classList.contains('big');
+      slots.forEach((o) => { o.root.classList.remove('big'); o.root.querySelector('.pzoom').textContent = '拡大'; });
+      grid.classList.toggle('zoomed', on);
+      if (on) { root.classList.add('big'); q('.pzoom').textContent = '元に戻す'; }
+      setTimeout(() => slots.forEach((o) => o.rot && o.rot.layout()), 50);
+    };
+    async function begin(spec) {
+      stopScan(); q('.pscan').hidden = true; q('details').hidden = true; st('接続の準備をしています…'); msg('');
+      try {
+        const p = newPC(); S.pc = p;
+        p.ontrack = (e) => { const v = q('.plive video'); v.srcObject = e.streams[0] || new MediaStream([e.track]); v.play().catch(() => {}); };
+        p.onconnectionstatechange = () => {
+          const s = p.connectionState;
+          if (s === 'connected') {
+            q('.ppair').hidden = true; q('.plive').hidden = false; q('.pfull').hidden = false; rot.layout(); st('見ています'); msg(''); keepAwake(); updateDualState();
+            clearInterval(S.stat); let last = null;
+            S.stat = setInterval(async () => {
+              try {
+                const rep = await p.getStats(); let t = null; rep.forEach((r) => { if (r.type === 'inbound-rtp' && r.kind === 'video') t = r; });
+                if (!t) return; const now = performance.now(), mbps = last ? ((t.bytesReceived - last.b) * 8 / ((now - last.t) / 1000) / 1e6) : 0; last = { b: t.bytesReceived, t: now };
+                showPath(p, q('.ppath'));
+                q('.pstat').textContent = (t.frameWidth ? t.frameWidth + '×' + t.frameHeight + ' / ' : '') + Math.round(t.framesPerSecond || 0) + ' fps / ' + mbps.toFixed(1) + ' Mbps';
+              } catch (e) {}
+            }, 1000);
+          } else if (s === 'disconnected') st('切れかけています…');
+          else if (s === 'failed' || s === 'closed') { st('つながりませんでした'); msg('同じWi-Fi(またはテザリング)か、確認してください。「つなぎ直す」を押してください。'); updateDualState(); }
+        };
+        await p.setRemoteDescription({ type: 'offer', sdp: await offerSdpFrom(spec) });
+        try { const rc = RTCRtpReceiver.getCapabilities('video').codecs; p.getTransceivers()[0].setCodecPreferences(rc.filter((c) => /video\/VP8$/i.test(c.mimeType)).concat(rc.filter((c) => /video\/rtx$/i.test(c.mimeType)))); } catch (e) {}
+        await p.setLocalDescription(await p.createAnswer()); await gathered(p);
+        drawQR(q('.qr'), bytesToStr(encodeAnswer(answerFields(p.localDescription.sdp))));
+        q('.pans').hidden = false; st('映す側の、読み取りを待っています'); watchConnect(p, q('.net'));
+      } catch (e) { st('失敗しました'); msg('接続情報を読み込めませんでした(' + errText(e) + ')。「つなぎ直す」を押して、もう一度、読み取ってください。'); q('.pscan').hidden = false; q('details').hidden = false; }
+    }
+    q('.puse').onclick = () => { const spec = parseOfferText(q('textarea').value.trim()); if (spec) begin(spec); else msg('リンクを読み込めませんでした。'); };
+    q('.pscan').onclick = async () => {
+      slots.forEach((o) => { if (o !== S) o.stopScan(); });   // 読み取りは、同時に1か所だけ
+      msg(''); q('.pscan').disabled = true;
+      try { S.vs = await cam('environment'); } catch (e) { q('.pscan').disabled = false; msg('カメラを開けませんでした(' + errText(e) + ')。'); return; }
+      const v = q('.pscanbox video'); v.srcObject = S.vs; v.play().catch(() => {}); q('.pscanbox').hidden = false;
+      const c = document.createElement('canvas'), g = c.getContext('2d', { willReadFrequently: true });
+      S.timer = setInterval(() => {
+        if (!v.videoWidth) return;
+        const sc = Math.min(1, 1280 / v.videoWidth); c.width = Math.round(v.videoWidth * sc); c.height = Math.round(v.videoHeight * sc);
+        g.drawImage(v, 0, 0, c.width, c.height);
+        const d = g.getImageData(0, 0, c.width, c.height), r = window.jsQR(d.data, c.width, c.height, { inversionAttempts: 'dontInvert' });
+        const spec = r && r.data && /#o4?=/.test(r.data) ? parseOfferText(r.data) : null;
+        if (spec) begin(spec);
+      }, 250);
+    };
+    q('.pfull').onclick = () => { if (rot.full()) return; const v = q('.plive video'), f = v.requestFullscreen || v.webkitRequestFullscreen || v.webkitEnterFullscreen; if (f) try { f.call(v); } catch (e) {} };
+    return S;
+  }
+  function updateDualState() {
+    const n = slots.filter((s) => s.pc && s.pc.connectionState === 'connected').length;
+    $('dState').textContent = n === 2 ? '2台とも、見ています' : n === 1 ? '1台つながっています' : '2台のカメラを、つなぎます';
+  }
+  function startDual() {
+    show('dual');
+    if (!slots.length) { const g = $('dualGrid'); for (let i = 0; i < 2; i++) { const s = makeSlot(i); slots.push(s); g.appendChild(s.root); } }
+  }
+  $('dBack').onclick = () => { location.href = location.pathname; };
+
+
   // ---------- 映像の回転(90度ずつ) ----------
   // 映像を、箱で包んで、回した分だけ、箱の大きさを合わせる。全画面は、箱ごとにする(回転を保つため)
   function makeRot(video, btn, key) {
@@ -431,7 +533,7 @@
     const layout = () => {
       const fs = document.fullscreenElement === box || document.webkitFullscreenElement === box;
       const vw = video.videoWidth || 16, vh = video.videoHeight || 9, odd = deg % 180 !== 0, asp = odd ? vh / vw : vw / vh;
-      const maxW = fs ? window.innerWidth : (box.parentNode.clientWidth || window.innerWidth - 36), maxH = fs ? window.innerHeight : window.innerHeight * 0.72;
+      const maxW = fs ? window.innerWidth : (box.parentNode.clientWidth || window.innerWidth - 36), maxH = fs ? window.innerHeight : window.innerHeight * (box.closest && box.closest('.pane.big') ? 0.86 : 0.72);
       let bw = maxW, bh = bw / asp; if (bh > maxH) { bh = maxH; bw = bh * asp; }
       box.style.width = bw + 'px'; box.style.height = bh + 'px';
       video.style.width = (odd ? bh : bw) + 'px'; video.style.height = (odd ? bw : bh) + 'px';
@@ -444,6 +546,108 @@
     return { box, layout, full() { const f = box.requestFullscreen || box.webkitRequestFullscreen; if (f) { try { f.call(box); return true; } catch (e) {} } return false; } };
   }
   const rotMain = makeRot($('remote'), $('rot'), 'genba.rot');
+
+
+  // ---------- 映す側1台 → 見る側2台 ----------
+  let s2Stream = null, s2Facing = 'environment', s2Timer = 0;
+  const s2Slots = [];
+  const s2Msg = (t) => { $('s2Msg').textContent = t; };
+  function makeSendSlot(i) {
+    const root = document.createElement('div'); root.className = 'pane';
+    root.innerHTML =
+      '<div class="phead"><span class="lab">' + (i + 1) + '台目</span><span class="pst">順番を待っています</span></div>' +
+      '<div class="spair" hidden><p class="lead">この' + (i + 1) + '台目の見る側で、このQRコードを読み取ってください。</p><canvas class="qr" aria-label="接続用のQRコード"></canvas>' +
+      '<div class="row"><button type="button" class="small scopy">リンクをコピー</button></div>' +
+      '<p class="lead">見る側に出たQRコードを、この画面の上の映像(カメラ)に映してください。</p>' +
+      '<details><summary>QRコードが読めないとき</summary><textarea rows="2" placeholder="見る側のコードを貼り付け"></textarea><button type="button" class="small suse">このコードでつなぐ</button></details></div>' +
+      '<div class="row"><button type="button" class="small sre" hidden>つなぎ直す</button></div>' +
+      '<p class="msg spath"></p><p class="msg smsg" role="status"></p><pre class="net" hidden></pre>';
+    const q = (s) => root.querySelector(s), st = (t) => { q('.pst').textContent = t; }, msg = (t) => { q('.smsg').textContent = t; };
+    const S = { i, root, pc: null, answered: false, offerSlim: '', done: false };
+    async function activate() {
+      if (S.pc) { try { S.pc.close(); } catch (e) {} }
+      S.answered = false; S.done = false; q('.sre').hidden = true; q('.net').hidden = true; msg(''); st('見る側の、読み取りを待っています'); q('.spair').hidden = false;
+      const p = newPC(); S.pc = p;
+      s2Stream.getTracks().forEach((t) => p.addTrack(t, s2Stream)); preferCodecs(p);
+      p.onconnectionstatechange = () => {
+        const s = p.connectionState;
+        if (s === 'connected') {
+          S.done = true; q('.spair').hidden = true; st('映しています'); msg(''); keepAwake();
+          setTimeout(() => showPath(p, q('.spath')), 1500); setInterval(() => showPath(p, q('.spath')), 5000);
+          try { const sd = p.getSenders()[0], pa = sd.getParameters(); if (!pa.encodings || !pa.encodings.length) pa.encodings = [{}]; pa.encodings[0].maxBitrate = 2000000; sd.setParameters(pa); } catch (e) {}
+          s2Next();
+        } else if (s === 'disconnected') st('切れかけています…');
+        else if (s === 'failed' || s === 'closed') { st('つながりませんでした'); msg('同じWi-Fi(またはテザリング)か、確認してください。'); q('.sre').hidden = false; S.answered = false; }
+      };
+      try {
+        await p.setLocalDescription(await p.createOffer()); await gathered(p);
+        S.offerSlim = slim(p.localDescription.sdp);
+        let tail; try { tail = '#o4=' + toB64u(encodeOffer(offerFields(S.offerSlim))); } catch (e) { tail = '#o=' + await pack(S.offerSlim); }
+        const url = location.origin + location.pathname + tail;
+        drawQR(q('.qr'), url); q('.scopy').onclick = () => copy(url, q('.scopy'));
+      } catch (e) { st('失敗しました'); msg('QRコードを作れませんでした(' + errText(e) + ')'); q('.sre').hidden = false; }
+    }
+    S.activate = activate;
+    S.accept = async (bytes) => {
+      if (S.answered || S.done) return;
+      S.key = Array.prototype.join.call(bytes, ',');
+      S.answered = true; st('つないでいます…'); msg(''); watchConnect(S.pc, q('.net'));
+      try { await S.pc.setRemoteDescription({ type: 'answer', sdp: buildAnswerSdp(S.offerSlim, decodeAnswer(bytes)) }); }
+      catch (e) { S.answered = false; st('読み取りを待っています'); msg('返信コードを読み込めませんでした(' + errText(e) + ')。もう一度、読み取らせてください。'); }
+    };
+    q('.sre').onclick = activate;
+    q('.suse').onclick = () => { let t = q('textarea').value.trim(); if (!t) return; if (t.indexOf('A4.') === 0) t = t.slice(3); try { S.accept(fromB64u(t)); } catch (e) { msg('コードを読み込めませんでした。'); } };
+    return S;
+  }
+  function s2Next() {   // 1台目がつながったら、2台目の準備をする
+    const nx = s2Slots.find((s) => !s.done && !s.pc);
+    if (nx) nx.activate();
+    const n = s2Slots.filter((s) => s.done).length;
+    $('s2State').textContent = n === 2 ? '2台に、映しています' : n === 1 ? '1台つながりました。次の見る側を、つなぎます' : '1台目の見る側を、つなぎます';
+  }
+  async function startSender2() {
+    show('sender2'); $('s2State').textContent = '準備しています…'; s2Msg('');
+    try { s2Stream = await cam(s2Facing); }
+    catch (e) { $('s2State').textContent = 'カメラを開けません'; s2Msg('カメラを開けませんでした(' + errText(e) + ')。設定でカメラを許可し、ほかのアプリがカメラを使っていないか確認してください。'); return; }
+    const v = $('prev2'); v.srcObject = s2Stream; v.play().catch(() => {});
+    if (!s2Slots.length) { const box = $('s2Cards'); for (let i = 0; i < 2; i++) { const s = makeSendSlot(i); s2Slots.push(s); box.appendChild(s.root); } }
+    s2Slots[0].activate(); $('s2State').textContent = '1台目の見る側を、つなぎます';
+    const c = document.createElement('canvas'), g = c.getContext('2d', { willReadFrequently: true });
+    clearInterval(s2Timer);
+    s2Timer = setInterval(() => {   // 返信のQRは、順番に、いま待っている1台分だけ読む
+      const cur = s2Slots.find((s) => !s.done && s.pc && !s.answered); if (!cur || !v.videoWidth) return;
+      const sc = Math.min(1, 1280 / v.videoWidth); c.width = Math.round(v.videoWidth * sc); c.height = Math.round(v.videoHeight * sc);
+      g.drawImage(v, 0, 0, c.width, c.height);
+      const img = g.getImageData(0, 0, c.width, c.height), r = window.jsQR(img.data, c.width, c.height, { inversionAttempts: 'dontInvert' }), b = r && r.binaryData;
+      if (b && b.length > 40 && b[0] === 0x41 && b[1] === 0x34 && !s2Slots.some((s) => s.key === b.join(','))) cur.accept(Uint8Array.from(b));   // 前の見る側の返信が、まだ映っていても、読み飛ばす
+    }, 250);
+  }
+  $('flip2').onclick = async () => {
+    try {
+      s2Facing = s2Facing === 'environment' ? 'user' : 'environment';
+      const ns = await cam(s2Facing), nt = ns.getVideoTracks()[0];
+      for (const s of s2Slots) if (s.pc) for (const sd of s.pc.getSenders()) await sd.replaceTrack(nt);
+      s2Stream.getTracks().forEach((t) => t.stop()); s2Stream = ns; $('prev2').srcObject = ns;
+    } catch (e) { s2Msg('カメラを切り替えられませんでした。'); }
+  };
+  $('s2Back').onclick = () => { location.href = location.pathname; };
+
+  // ---------- 使い方の選択 ----------
+  const MODES = {
+    1: { title: '映す1台 → 見る1台(スマホ2台)', steps: ['2台を、同じWi-Fiにつなぎます。ルーターがなければ、片方の「テザリング」に、もう片方をつなぎます。', '映す側で、「映す側」を押します。QRコードが出ます。', '見る側で、「見る側」を押して、そのQRを読み取ります(標準のカメラで読んで、出てきたページを開いても構いません)。', '見る側に出たQRを、映す側のカメラに映します。'], s: '映す側(カメラを現場に置く)', v: '見る側' },
+    2: { title: '映す2台 → 見る1台(見る側が、左右2画面。iPad向け)', steps: ['3台を、同じWi-Fiにつなぎます。ルーターがなければ、1台の「テザリング」に、ほかの2台をつなぎます。', '映す側の2台で、「映す側」を押します。QRコードが出ます。', '見る側(iPadなど)で、「見る側」を押します。「左」の枠で、1台目のQRを読み取ります。', '枠に出た返信のQRを、1台目のカメラに映します。つながったら、「右」の枠でも、2台目で同じことをします。', 'iPadを横にすると、左と右が並びます。枠ごとに、「拡大」「90°回転」「全画面」が使えます。'], s: '映す側(2台とも、これを押す)', v: '見る側(2画面で見る)' },
+    3: { title: '映す1台 → 見る2台(3台)', steps: ['3台を、同じWi-Fiにつなぎます。ルーターがなければ、1台の「テザリング」に、ほかの2台をつなぎます。', '映す側の1台で、「映す側」を押します。1台目の見る側用のQRコードが出ます。', '1台目の見る側で、「見る側」を押して、そのQRを読み取ります。出てきた返信のQRを、映す側のカメラに映します。', 'つながると、映す側に、2台目の見る側用のQRが出ます。2台目の見る側も、同じようにつなぎます。'], s: '映す側(1台。2台の見る側に送る)', v: '見る側(2台とも、これを押す)' }
+  };
+  let mode = 1;
+  function chooseMode(m) {
+    mode = m; const d = MODES[m];
+    $('roleTitle').textContent = d.title;
+    $('roleSteps').innerHTML = d.steps.map((t) => '<li>' + t + '</li>').join('');
+    $('goSender').textContent = d.s; $('goViewer').textContent = d.v;
+    show('role');
+  }
+  [1, 2, 3].forEach((m) => { $('m' + m).onclick = () => chooseMode(m); });
+  $('roleBack').onclick = () => show('home');
 
   // ---------- この端末での自己診断 ----------
   // 1台の中で、映す側と見る側を両方動かし、接続の手順を通して試す。端末ごとの非対応・相性を見つけるため
@@ -505,8 +709,8 @@
   if (/[?&]selftest=1/.test(location.search)) window.__t = { slim, offerFields, encodeOffer, decodeOffer, buildOfferSdp, answerFields, encodeAnswer, decodeAnswer, buildAnswerSdp };
 
   // ---------- 入口 ----------
-  $('goSender').onclick = startSender;
-  $('goViewer').onclick = () => startViewer(null);
+  $('goSender').onclick = () => (mode === 3 ? startSender2() : startSender());
+  $('goViewer').onclick = () => (mode === 2 ? startDual() : startViewer(null));
   const back = () => { location.href = location.pathname; };
   $('sBack').onclick = back; $('vBack').onclick = back;
 
